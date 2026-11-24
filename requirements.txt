@@ -1,0 +1,28 @@
+# Speaking Coach — exact versions that were tested (Python 3.12, CPU). Install:
+#   pip install -r requirements.txt
+# On a GPU server, install the CUDA build of torch first (see pytorch.org), then this file;
+# the app uses the GPU automatically (coach/device.py).
+
+# speech to text, grammar, pronunciation models
+faster-whisper==1.2.1
+transformers==5.23.0
+torch==2.15.0
+safetensors==0.8.0
+sentencepiece==0.2.3
+huggingface_hub==2.4.0
+errant==3.0.2
+spacy==3.8.18
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+cmudict==1.1.3
+lemminflect==0.2.3
+numpy==2.5.5
+
+# audio / video files and the face on camera
+av==15.1.0
+mediapipe==1.2.3
+
+# website server and the AI voice
+Flask==3.1.3
+edge-tts==7.3.1
+requests==2.34.2
+PyJWT[crypto]==2.10.1          # Sign in with Apple (token check)

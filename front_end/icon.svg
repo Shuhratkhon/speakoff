@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130">
+  <title>Speakoff</title>
+  <rect width="130" height="130" rx="30" fill="#060E24"/>
+  <g>
+    <path d="M20 20 h48 a10 10 0 0 1 10 10 v40 a10 10 0 0 1 -10 10 h-30 l-14 11 v-11 h-4 a10 10 0 0 1 -10 -10 v-40 a10 10 0 0 1 10 -10z" fill="#FFFFFF"/>
+    <g transform="translate(44 49) rotate(-45)">
+      <polygon points="0,-25 2.8,-19.5 2.8,8 -2.8,8 -2.8,-19.5" fill="#1E6BFF"/>
+      <line x1="0" y1="-18" x2="0" y2="5" stroke="#FFFFFF" stroke-width="0.9" stroke-linecap="round" opacity="0.9"/>
+      <rect x="-5.6" y="8" width="11.2" height="3.4" rx="1.7" fill="#060E24"/>
+      <circle cx="-5.8" cy="9.7" r="2" fill="#38A3FF"/>
+      <circle cx="5.8" cy="9.7" r="2" fill="#38A3FF"/>
+      <rect x="-1.9" y="11.4" width="3.8" height="8.2" rx="1" fill="#060E24"/>
+      <path d="M-1.9 13.6 l3.8 -1.4 M-1.9 16 l3.8 -1.4 M-1.9 18.4 l3.8 -1.4" stroke="#38A3FF" stroke-width="0.8"/>
+      <circle cx="0" cy="21.8" r="2.7" fill="#1E6BFF" stroke="#060E24" stroke-width="1"/>
+    </g>
+    <g transform="translate(44 49) rotate(45)">
+      <polygon points="0,-25 2.8,-19.5 2.8,8 -2.8,8 -2.8,-19.5" fill="#1E6BFF"/>
+      <line x1="0" y1="-18" x2="0" y2="5" stroke="#FFFFFF" stroke-width="0.9" stroke-linecap="round" opacity="0.9"/>
+      <rect x="-5.6" y="8" width="11.2" height="3.4" rx="1.7" fill="#060E24"/>
+      <circle cx="-5.8" cy="9.7" r="2" fill="#38A3FF"/>
+      <circle cx="5.8" cy="9.7" r="2" fill="#38A3FF"/>
+      <rect x="-1.9" y="11.4" width="3.8" height="8.2" rx="1" fill="#060E24"/>
+      <path d="M-1.9 13.6 l3.8 -1.4 M-1.9 16 l3.8 -1.4 M-1.9 18.4 l3.8 -1.4" stroke="#38A3FF" stroke-width="0.8"/>
+      <circle cx="0" cy="21.8" r="2.7" fill="#1E6BFF" stroke="#060E24" stroke-width="1"/>
+    </g>
+    <path d="M120 62 h-40 a10 10 0 0 0 -10 10 v26 a10 10 0 0 0 10 10 h26 l14 11 v-11 a10 10 0 0 0 10 -10 v-26 a10 10 0 0 0 -10 -10z" fill="none" stroke="#2D7BFF" stroke-width="9" opacity="0.3"/>
+    <path d="M120 62 h-40 a10 10 0 0 0 -10 10 v26 a10 10 0 0 0 10 10 h26 l14 11 v-11 a10 10 0 0 0 10 -10 v-26 a10 10 0 0 0 -10 -10z" fill="#060E24" stroke="#38A3FF" stroke-width="4"/>
+    <path d="M88 79 v12 M96 74 v22 M104 81 v8" stroke="#38A3FF" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

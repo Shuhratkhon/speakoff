@@ -1,0 +1,22 @@
+# Python / tools
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.claude/
+.env
+
+# Large or private files (not for GitHub)
+# training datasets (~840 MB)
+data/
+# trained models (~3.4 GB), see README "Models"
+models/
+# run logs and cached analyses of recordings
+logs/
+# people's own voice / video recordings
+samples/
+evaluate/results/
+# database, password hashes, secret key, user recordings and photos
+server/data/
+*.db
+*.log
