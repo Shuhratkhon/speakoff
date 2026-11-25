@@ -43,3 +43,29 @@ def to_audio(src, dst, max_seconds):
                 out.mux(pkt)
         for pkt in ost.encode(None):
             out.mux(pkt)
+
+
+def join_audio(srcs, dst, max_seconds):
+    """Several recordings (the parts of a mock test) -> one mono Opus .ogg, in order, cut at max_seconds."""
+    total = 0.0
+    with av.open(str(dst), "w", format="ogg") as out:
+        ost = out.add_stream("libopus", rate=48000, layout="mono")
+        ost.bit_rate = 32000
+        for src in srcs:
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=48000)
+            with av.open(str(src)) as inp:
+                for frame in inp.decode(inp.streams.audio[0]):
+                    for f in resampler.resample(frame):
+                        if total > max_seconds:
+                            break
+                        total += f.samples / 48000
+                        f.pts = None
+                        for pkt in ost.encode(f):
+                            out.mux(pkt)
+                for f in resampler.resample(None):
+                    f.pts = None
+                    for pkt in ost.encode(f):
+                        out.mux(pkt)
+        for pkt in ost.encode(None):
+            out.mux(pkt)
+    return total

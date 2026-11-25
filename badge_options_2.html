@@ -1,0 +1,168 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Badge options 2</title>
+<style>
+  body { margin: 0; background: #1E1F22; color: #E6EAF2; font-family: system-ui, sans-serif; padding: 18px; }
+  .opt { background: #2B2D30; border-radius: 16px; padding: 16px 18px; margin: 0 auto 14px; max-width: 860px; }
+  .opt h2 { margin: 0 0 4px; font-size: 18px; }
+  .opt p { margin: 0 0 12px; color: #9AA0AA; font-size: 14px; }
+  .row { display: flex; gap: 6px; justify-content: space-between; flex-wrap: wrap; }
+  .cell { text-align: center; font-size: 12px; color: #9AA0AA; width: 108px; }
+  .cell svg { display: block; margin: 0 auto 4px; overflow: visible; }
+  .small { display: flex; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #3a3d42; align-items: center; }
+  .small span { font-size: 12px; color: #9AA0AA; margin-right: 6px; }
+</style></head>
+<body><div id="out"></div>
+<script>
+const RANKS = [["copper", "#B87333"], ["bronze", "#8C5A2B"], ["silver", "#9EA7B3"], ["gold", "#D4A72C"],
+  ["platinum", "#3FB8AF"], ["diamond", "#4C8DF6"], ["master", "#9B59F5"]];
+const ROMAN = ["", "I", "II", "III"];
+const GOLD = "#F6D365", GOLD_DK = "#B7791F", LEAF = "#3DBE6B", LEAF_DK = "#2A9653";
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16), to = amt > 0 ? 255 : 0, a = Math.abs(amt);
+  const ch = (v) => Math.round(v + (to - v) * a).toString(16).padStart(2, "0");
+  return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+}
+let N = 0;
+const rad = (d) => d * Math.PI / 180;
+const pts = (p) => p.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+const label = (r) => r.div ? ROMAN[r.div] : String(r.wins ?? "★");
+const txt = (r, x, y, size, fill, stroke) => `<text x="${x}" y="${y}" text-anchor="middle" font-size="${size}" font-weight="900"
+  font-family="system-ui,sans-serif" fill="${fill}" stroke="${stroke}" stroke-width="3" paint-order="stroke">${label(r)}</text>`;
+const star = (cx, cy, R, r, fill, n = 5, rot = -90) => {
+  const p = []; for (let i = 0; i < n * 2; i++) { const a = rad(rot + i * 180 / n), rr = i % 2 ? r : R; p.push([cx + rr * Math.cos(a), cy + rr * Math.sin(a)]); }
+  return `<polygon points="${pts(p)}" fill="${fill}" stroke-linejoin="round"/>`;
+};
+const gold = (id) => `<linearGradient id="${id}g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFF7C2"/><stop offset=".5" stop-color="${GOLD}"/><stop offset="1" stop-color="${GOLD_DK}"/></linearGradient>`;
+const crown = (id, y = 0) => `<path transform="translate(0 ${y})" d="M44 -2 L42 -16 L52 -8 L60 -20 L68 -8 L78 -16 L76 -2 Z" fill="url(#${id}g)" stroke="${GOLD_DK}" stroke-width="1.3" stroke-linejoin="round"/>`;
+
+// minimal green laurel (Silver and up): a thin stem with 4 flat leaves on each side
+function laurel(lvl, cy = 62, R = 54) {
+  if (lvl < 2) return "";
+  const leaf = "M0 0 C5 -4 5 -10 0 -15 C-5 -10 -5 -4 0 0Z";
+  const side = [116, 138, 160, 182].map((d, i) => {
+    const x = 60 + R * Math.cos(rad(d)), y = cy + R * Math.sin(rad(d));
+    return `<path d="${leaf}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${d + 180 - 32}) scale(${1 - i * .06})" fill="${i % 2 ? LEAF_DK : LEAF}"/>`;
+  }).join("");
+  const a = [60 + R * Math.cos(rad(106)), cy + R * Math.sin(rad(106))], b = [60 + R * Math.cos(rad(192)), cy + R * Math.sin(rad(192))];
+  const stem = `<path d="M${a[0].toFixed(1)} ${a[1].toFixed(1)} A${R} ${R} 0 0 1 ${b[0].toFixed(1)} ${b[1].toFixed(1)}" fill="none" stroke="${LEAF_DK}" stroke-width="2" stroke-linecap="round"/>`;
+  const g = stem + side;
+  return `<g>${g}<g transform="translate(120 0) scale(-1 1)">${g}</g></g>`;
+}
+
+// 1 · Golden Mic: a stage microphone in the rank's colour; sound waves grow with the rank
+function mic(r, lvl, c, id) {
+  const lt = shade(c, .55), dk = shade(c, -.5);
+  const waves = [0, 1, 1, 2, 2, 3, 3][lvl];
+  const arcs = Array.from({ length: waves }, (_, i) => {
+    const s = 34 + i * 9;
+    return `<path d="M${60 - s} ${16} Q${60 - s - 10} ${40} ${60 - s} ${64}" fill="none" stroke="${lt}" stroke-width="3.2" stroke-linecap="round" opacity="${1 - i * .25}"/>
+            <path d="M${60 + s} ${16} Q${60 + s + 10} ${40} ${60 + s} ${64}" fill="none" stroke="${lt}" stroke-width="3.2" stroke-linecap="round" opacity="${1 - i * .25}"/>`;
+  }).join("");
+  const grille = Array.from({ length: 7 }, (_, i) => `<line x1="36" x2="84" y1="${12 + i * 6}" y2="${12 + i * 6}" stroke="${dk}" stroke-width="1.2" opacity=".45"/>`).join("");
+  return `<defs>${gold(id)}<linearGradient id="${id}m" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${dk}"/><stop offset=".35" stop-color="${lt}"/><stop offset=".6" stop-color="${c}"/><stop offset="1" stop-color="${dk}"/></linearGradient>
+    <clipPath id="${id}c"><rect x="38" y="2" width="44" height="58" rx="22"/></clipPath></defs>
+    ${laurel(lvl, 66, 52)}${arcs}
+    <path d="M30 44 Q30 80 60 80 Q90 80 90 44" fill="none" stroke="${dk}" stroke-width="5" stroke-linecap="round"/>
+    <rect x="56" y="80" width="8" height="16" fill="${dk}"/><ellipse cx="60" cy="99" rx="20" ry="5" fill="${dk}"/>
+    <rect x="38" y="2" width="44" height="58" rx="22" fill="url(#${id}m)" stroke="${shade(c, -.65)}" stroke-width="2"/>
+    <g clip-path="url(#${id}c)">${grille}<rect x="44" y="4" width="8" height="50" rx="4" fill="#FFFFFF" opacity=".3"/></g>
+    <rect x="36" y="44" width="48" height="10" rx="3" fill="${lvl >= 3 ? `url(#${id}g)` : shade(c, -.3)}" stroke="${shade(c, -.65)}" stroke-width="1.2"/>
+    <circle cx="60" cy="27" r="14" fill="${shade(c, -.55)}" opacity=".85"/>
+    ${lvl === 6 ? crown(id, 2) : ""}${txt(r, 60, r.div ? 34 : 33, r.div ? 17 : 15, "#FFFFFF", shade(c, -.7))}`;
+}
+
+// 2 · Duel bubble: Speakoff's speech bubble; crossed swords behind it from Gold, gold rim for Master
+function bubble(r, lvl, c, id) {
+  const lt = shade(c, .55), dk = shade(c, -.55);
+  const sword = (rot) => `<g transform="rotate(${rot} 60 56)"><rect x="57.5" y="-8" width="5" height="78" rx="2" fill="#E5E7EB" stroke="#6B7280" stroke-width="1"/>
+      <path d="M57.5 -8 L60 -16 L62.5 -8 Z" fill="#E5E7EB" stroke="#6B7280" stroke-width="1"/>
+      <rect x="48" y="68" width="24" height="5" rx="2" fill="url(#${id}g)" stroke="${GOLD_DK}" stroke-width=".8"/>
+      <rect x="57" y="73" width="6" height="14" rx="2" fill="${dk}"/><circle cx="60" cy="90" r="4" fill="url(#${id}g)"/></g>`;
+  const swords = lvl >= 3 ? sword(-38) + sword(38) : "";
+  const dots = lvl >= 5 ? `<circle cx="104" cy="22" r="3" fill="#FFFFFF"/><circle cx="16" cy="24" r="2.2" fill="${lt}"/><circle cx="108" cy="92" r="2" fill="${lt}"/>` : "";
+  const shape = "M24 14 H96 Q110 14 110 28 V72 Q110 86 96 86 H52 L30 104 L34 86 H24 Q10 86 10 72 V28 Q10 14 24 14 Z";
+  return `<defs>${gold(id)}<linearGradient id="${id}b" x1="0" y1="0" x2=".3" y2="1"><stop offset="0" stop-color="${lt}"/><stop offset=".5" stop-color="${c}"/><stop offset="1" stop-color="${dk}"/></linearGradient></defs>
+    ${laurel(lvl, 60, 56)}${swords}${dots}
+    <path d="${shape}" fill="url(#${id}b)" stroke="${lvl === 6 ? `url(#${id}g)` : shade(c, -.65)}" stroke-width="${lvl === 6 ? 4 : 2.5}" stroke-linejoin="round"/>
+    <path d="M24 20 H92 Q100 20 102 28 Q70 36 18 34 V28 Q18 20 24 20 Z" fill="#FFFFFF" opacity=".22"/>
+    <path d="M30 62 q5 -8 10 0 t10 0 t10 0 t10 0 t10 0 t10 0" fill="none" stroke="#FFFFFF" stroke-width="2.2" opacity=".35" stroke-linecap="round"/>
+    ${lvl === 6 ? crown(id, 14) : ""}${txt(r, 60, 58, r.div ? 30 : 28, "#FFFFFF", shade(c, -.7))}`;
+}
+
+// 3 · Ember: a flame in the rank's colour; it gets taller with more sparks, side flames for Master
+function ember(r, lvl, c, id) {
+  const lt = shade(c, .6), dk = shade(c, -.45);
+  const k = .82 + lvl * .03;
+  const flame = "M60 4 C66 20 86 32 88 60 C90 88 76 106 60 106 C44 106 30 88 32 62 C33 46 42 40 44 26 C50 36 54 40 56 46 C60 32 56 18 60 4 Z";
+  const inner = "M60 40 C64 52 76 60 76 76 C76 92 68 100 60 100 C52 100 44 92 44 78 C44 66 52 62 54 52 C57 58 58 60 60 62 C62 54 60 48 60 40 Z";
+  const sparks = Array.from({ length: lvl + 1 }, (_, i) => { const a = rad(-140 + i * (100 / Math.max(lvl, 1))), d = 50 + (i % 2) * 8;
+    return `<circle cx="${(60 + d * Math.cos(a)).toFixed(1)}" cy="${(64 + d * Math.sin(a)).toFixed(1)}" r="${2.4 - (i % 3) * .5}" fill="${lt}"/>`; }).join("");
+  const side = lvl === 6 ? `<path d="M30 92 C14 84 10 66 18 50 C22 62 28 66 34 68 Z M90 92 C106 84 110 66 102 50 C98 62 92 66 86 68 Z" fill="${shade(c, .2)}" opacity=".9"/>` : "";
+  return `<defs>${gold(id)}<linearGradient id="${id}f" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="${dk}"/><stop offset=".55" stop-color="${c}"/><stop offset="1" stop-color="${lt}"/></linearGradient>
+    <linearGradient id="${id}i" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="${lt}"/></linearGradient></defs>
+    ${laurel(lvl, 66, 54)}${side}${sparks}
+    <g transform="translate(60 106) scale(${k}) translate(-60 -106)">
+      <path d="${flame}" fill="url(#${id}f)" stroke="${shade(c, -.6)}" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="${inner}" fill="url(#${id}i)" opacity=".9"/></g>
+    ${lvl === 6 ? crown(id, 10) : ""}${txt(r, 60, 90, r.div ? 22 : 20, "#FFFFFF", shade(c, -.7))}`;
+}
+
+// 4 · Lotus: a flower that opens up; 3 petals at Copper, one more pair per rank, glowing centre for Master
+function lotus(r, lvl, c, id) {
+  const lt = shade(c, .55), dk = shade(c, -.5);
+  const n = 3 + lvl, spread = 30 + lvl * 15;
+  const petal = (a, len, w, fill, op = 1) => `<path d="M0 0 C${w} ${-len * .35} ${w * .8} ${-len * .8} 0 ${-len} C${-w * .8} ${-len * .8} ${-w} ${-len * .35} 0 0Z"
+      transform="translate(60 84) rotate(${a.toFixed(1)})" fill="${fill}" stroke="${shade(c, -.6)}" stroke-width="1.2" opacity="${op}"/>`;
+  let back = "", front = "";
+  for (let i = 0; i < n; i++) { const a = -spread + (2 * spread) * (n === 1 ? .5 : i / (n - 1));
+    back += petal(a, 66, 18, `url(#${id}p)`); }
+  for (let i = 0; i < 3; i++) front += petal(-26 + i * 26, 48, 14, `url(#${id}q)`);
+  const halo = lvl === 6 ? `<circle cx="60" cy="58" r="50" fill="${c}" opacity=".22"/>${star(60, 6, 7, 2.5, GOLD)}${star(16, 36, 4, 1.4, "#FFFFFF")}${star(104, 36, 4, 1.4, "#FFFFFF")}` : "";
+  return `<defs>${gold(id)}<linearGradient id="${id}p" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="${dk}"/><stop offset="1" stop-color="${lt}"/></linearGradient>
+    <linearGradient id="${id}q" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient></defs>
+    ${halo}${laurel(lvl, 70, 50)}${back}${front}
+    <ellipse cx="60" cy="88" rx="30" ry="7" fill="${dk}" opacity=".7"/>
+    <circle cx="60" cy="64" r="15" fill="${lvl >= 3 ? `url(#${id}g)` : shade(c, -.35)}" stroke="${shade(c, -.65)}" stroke-width="1.5"/>
+    ${txt(r, 60, r.div ? 71 : 70, r.div ? 18 : 15, "#FFFFFF", shade(c, -.7))}`;
+}
+
+// 5 · Compass star: a two-tone star; 4 points at Copper, 2 more per rank, a ring from Gold, rays for Master
+function compass(r, lvl, c, id) {
+  const lt = shade(c, .55), dk = shade(c, -.5), n = 4 + lvl * 2;
+  let pts3d = "";
+  for (let i = 0; i < n; i++) {
+    const a = rad(-90 + i * 360 / n), L = i % 2 ? 36 : 50, w = rad(180 / n);
+    const tip = [60 + L * Math.cos(a), 60 + L * Math.sin(a)];
+    const l = [60 + 14 * Math.cos(a - w), 60 + 14 * Math.sin(a - w)], rr = [60 + 14 * Math.cos(a + w), 60 + 14 * Math.sin(a + w)];
+    pts3d += `<polygon points="${pts([[60, 60], l, tip])}" fill="${i % 2 ? shade(c, .15) : lt}"/><polygon points="${pts([[60, 60], tip, rr])}" fill="${i % 2 ? dk : shade(c, -.2)}"/>`;
+  }
+  const ring = lvl >= 3 ? `<circle cx="60" cy="60" r="40" fill="none" stroke="url(#${id}g)" stroke-width="3"/>` : "";
+  const rays = lvl === 6 ? Array.from({ length: 16 }, (_, i) => `<rect x="59" y="-2" width="2" height="10" fill="${GOLD}" transform="rotate(${i * 22.5 + 11.25} 60 60)"/>`).join("") : "";
+  return `<defs>${gold(id)}</defs>${laurel(lvl, 62, 56)}${rays}${ring}
+    <g stroke="${shade(c, -.65)}" stroke-width=".8" stroke-linejoin="round">${pts3d}</g>
+    <circle cx="60" cy="60" r="17" fill="${shade(c, -.4)}" stroke="${lvl >= 3 ? GOLD : lt}" stroke-width="2.5"/>
+    ${txt(r, 60, r.div ? 67 : 66, r.div ? 18 : 15, "#FFFFFF", shade(c, -.7))}`;
+}
+
+const STYLES = [
+  ["6 · Golden Mic", "A stage microphone in the rank's colour, made for a speaking app. Sound waves grow with the rank, a gold band from Gold, a crown for Master.", mic],
+  ["7 · Duel Bubble", "Speakoff's own speech bubble with a sound wave. Crossed swords behind it from Gold, sparkles from Diamond, a gold rim and crown for Master.", bubble],
+  ["8 · Ember", "A flame that grows taller with every rank and throws more sparks. Side flames and a crown for Master.", ember],
+  ["9 · Lotus", "A flower that opens as you climb: 3 petals at Copper, 2 more each rank. A gold centre from Gold, a glow and stars for Master.", lotus],
+  ["10 · Compass Star", "A two-tone star: 4 points at Copper, 2 more each rank (16 at Master). A gold ring from Gold, gold rays for Master.", compass],
+];
+const list = [["copper", 3], ["bronze", 2], ["silver", 1], ["gold", 2], ["platinum", 3], ["diamond", 1], ["master", null]];
+const name = (k) => k[0].toUpperCase() + k.slice(1);
+function badge(fn, rank, div, size) {
+  const lvl = RANKS.findIndex((x) => x[0] === rank), c = RANKS[lvl][1], r = { rank, div, wins: div ? null : 27 };
+  return `<svg width="${size}" height="${size}" viewBox="-14 -24 148 148">${fn(r, lvl, c, "b" + (++N))}</svg>`;
+}
+let h = "";
+for (const [title, about, fn] of STYLES) {
+  h += `<div class="opt"><h2>${title}</h2><p>${about} Green laurel from Silver.</p><div class="row">${list.map(([k, d]) =>
+    `<div class="cell">${badge(fn, k, d, 100)}${name(k)} ${d ? ROMAN[d] : "27"}</div>`).join("")}</div>
+    <div class="small"><span>In lists:</span>${list.map(([k, d]) => badge(fn, k, d, 26)).join("")}</div></div>`;
+}
+document.getElementById("out").innerHTML = h;
+</script></body></html>

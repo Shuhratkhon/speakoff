@@ -26,12 +26,15 @@ def is_video(path):
         return False
 
 
-def analyse(path, fresh=False, video=None, cache=True, max_seconds=None):
+def analyse(path, fresh=False, video=None, cache=True, max_seconds=None, lang="en"):
     """Run all models on one file (slow) and keep only what the scores need (cached in logs/rate_cache).
     video       = a separate video file for the face part (the web app analyses a converted audio file;
                   default: `path` itself when it is a video)
     cache       = False: do not read or write logs/rate_cache (the web app keeps results in its database)
     max_seconds = only the first N seconds of the video are used for the face (the audio is already cut)."""
+    if lang == "ko":
+        from coach import korean
+        return korean.analyse(path, video=video, max_seconds=max_seconds)
     p = Path(path)
     cache_file = CACHE / (p.stem + ".json")
     if cache and cache_file.exists() and not fresh and             json.loads(cache_file.read_text(encoding="utf-8"))["mtime"] == p.stat().st_mtime:
@@ -78,6 +81,9 @@ def report(path, d, chosen=None):
     """chosen = sections the speaker picked (fluency, grammar, vocabulary, pronunciation; default all).
     A section not picked scores 0, as in an exam where a criterion is not assessed; the overall score
     and the IELTS / CEFR / TOEFL estimate include those zeros. Video adds a separate On camera score."""
+    if d.get("lang") == "ko":
+        from coach import korean
+        return korean.report(d, chosen)
     from coach import delivery, grammar, level
     chosen = chosen or level.SECTIONS
     acc, per100, clean = grammar.grammar_score(d["grammar_results"], d["n_words"])

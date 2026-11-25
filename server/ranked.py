@@ -18,7 +18,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from server import db, plans, questions, ranks, rewards
+from server import cosmetics, db, plans, questions, ranks, rewards
 
 COUNTDOWN = 4            # "opponent found" -> question shown
 READ_S = 5               # question shown -> recording starts
@@ -27,7 +27,7 @@ GRACE = 45               # extra time for the upload after the longest answer
 WAIT_PLAYER = 20         # seconds in the queue before a replay / bot match
 QUEUE_STALE = 10         # a queued player who stopped asking is removed
 K = 40                   # Elo factor
-DRAW_GAP = 2             # less than 2 points apart = draw
+DRAW_GAP = 1             # only the same score is a draw (user, 2026-11-25)
 HISTORY = 10             # match log: the last 10 matches, for every plan
 SECTIONS = ["fluency", "grammar", "vocabulary", "pronunciation"]
 LOCK = threading.RLock()
@@ -35,14 +35,31 @@ LOCK = threading.RLock()
 
 # ------------------------------------------------------------------ players
 
+def lang_of(user):
+    return (user["learn_lang"] if "learn_lang" in user.keys() else None) or "en"
+
+
+def rating(uid, lang=None):
+    """{"rp", "best_rp", "season"}: one rank per player, shared by every language they play Ranked in."""
+    u = db.one("SELECT rp, best_rp, season FROM users WHERE id=?", uid)
+    return {"rp": u["rp"], "best_rp": u["best_rp"], "season": u["season"]} if u else {"rp": 0, "best_rp": 0, "season": None}
+
+
+def add_rp(uid, lang, delta):
+    db.run("UPDATE users SET rp=rp+?, best_rp=max(best_rp, rp+?) WHERE id=?", delta, delta, uid)
+
+
+def rated(user):
+    return dict(user)
+
+
 def ensure_season(user):
-    """New season: keep half of the RP. Returns the fresh user row."""
+    """New season: keep half of the RP."""
     sid = ranks.season_id()
     if user["season"] != sid:
-        rp = user["rp"] // 2 if user["season"] else 0
-        db.run("UPDATE users SET rp=?, season=? WHERE id=?", rp, sid, user["id"])
+        db.run("UPDATE users SET rp=?, season=? WHERE id=?", user["rp"] // 2 if user["season"] else 0, sid, user["id"])
         user = db.one("SELECT * FROM users WHERE id=?", user["id"])
-    return user
+    return dict(user)
 
 
 def played_today(uid):
@@ -51,20 +68,38 @@ def played_today(uid):
 
 
 def limits(user):
-    per_day = plans.plan_of(user)["ranked"]
+    from server import shop
+    per_day = plans.plan_of(user)["ranked"] + shop.bought_today(user["id"], "ranked")
     return {"per_day": per_day, "left": max(per_day - played_today(user["id"]), 0)}
+
+
+def master_wins(uid, sid=None, lang=None):
+    """Master players show their wins at Master this season next to the rank (e.g. "Master 27")."""
+    return db.one("SELECT COUNT(*) n FROM match_players p JOIN matches m ON m.id=p.match_id WHERE p.user_id=? "
+                  "AND p.is_ghost=0 AND p.result='win' AND p.rp_before>=? AND m.kind!='friendly' AND m.season=?",
+                  uid, ranks.MASTER_RP, sid or ranks.season_id())["n"]
+
+
+def rank_for(uid, rp, lang=None):
+    r = ranks.rank_of(rp)
+    if r["rank"] == "master" and uid:
+        r["wins"] = master_wins(uid, lang=lang)
+    return r
 
 
 def card(u, rp=None):
     """What other players see: name, photo, frame, rank, the 2 shown skills."""
     if u is None:
         return {"bot": True, "username": "Speakoff Bot", "rank": ranks.rank_of(rp or 0), "skills": [], "frame": "none",
-                "photo": None}
-    rp = u["rp"] if rp is None else rp
+                "photo": None, "name_style": "", "entrance": "", "sticker": ""}
+    rp = rated(u)["rp"] if rp is None else rp
     shown = [s for s in (u["shown_skills"] or "").split(",") if s]
-    return {"bot": False, "username": u["username"], "rank": ranks.rank_of(rp),
+    return {"bot": False, "username": u["username"], "rank": rank_for(u["id"], rp),
             "photo": f"/api/photo/{u['username']}?v={u['photo']}" if u["photo"] else None,
-            "frame": u["frame"], "skills": rewards.shown_skills(u["id"], shown)}
+            "frame": u["frame"], "skills": rewards.shown_skills(u["id"], shown),
+            "country": u["country"], "display_name": u["display_name"],
+            "name_style": cosmetics.worn(u, "name_style"), "entrance": cosmetics.worn(u, "entrance"),
+            "sticker": cosmetics.worn(u, "sticker")}
 
 
 def active_match(uid):
@@ -80,12 +115,14 @@ def join(user):
     live = active_match(user["id"])
     if live:
         return {"state": "found", "match": live}
+    if ban_until(user):
+        return {"state": "banned", "until": ban_until(user)}
     if limits(user)["left"] <= 0:
         return {"state": "limit"}
     now = time.time()
     with LOCK:
-        db.run("INSERT OR REPLACE INTO ranked_queue (user_id, rp, joined, last_poll, match_id) VALUES (?,?,?,?,NULL)",
-               user["id"], user["rp"], now, now)
+        db.run("INSERT OR REPLACE INTO ranked_queue (user_id, rp, joined, last_poll, match_id, lang) VALUES (?,?,?,?,NULL,?)",
+               user["id"], user["rp"], now, now, lang_of(user))
     return poll(user)
 
 
@@ -119,59 +156,61 @@ def poll(user):
 
 def _pair(me, now):
     best = None
-    for o in db.all_("SELECT * FROM ranked_queue WHERE match_id IS NULL AND user_id!=?", me["user_id"]):
+    for o in db.all_("SELECT * FROM ranked_queue WHERE match_id IS NULL AND user_id!=? AND lang=?", me["user_id"], me["lang"]):
         waited = max(now - me["joined"], now - o["joined"])
         gap = abs(o["rp"] - me["rp"])
         if gap <= 150 + 20 * waited and (best is None or gap < abs(best["rp"] - me["rp"])):
             best = o
     if best is None:
         return None
-    question = _question([me["user_id"], best["user_id"]])
+    question = _question([me["user_id"], best["user_id"]], me["lang"])
     mid = _create("player", question, [
         {"user_id": me["user_id"], "rp_before": me["rp"]},
         {"user_id": best["user_id"], "rp_before": best["rp"]},
-    ])
+    ], me["lang"])
     db.run("UPDATE ranked_queue SET match_id=? WHERE user_id=?", mid, best["user_id"])
     return mid
 
 
-def _recent_questions(uid, n=20):
+def _recent_questions(uid, n=200):
     return {r["question"] for r in db.all_("SELECT m.question FROM matches m JOIN match_players p ON p.match_id=m.id "
                                            "WHERE p.user_id=? AND p.is_ghost=0 ORDER BY m.created DESC LIMIT ?", uid, n)}
 
 
-def _question(uids):
+def _question(uids, lang="en"):
     seen = set().union(*(_recent_questions(u) for u in uids))
-    pool = [q for q in questions.RANKED if q not in seen] or questions.RANKED
+    bank = questions.bank(lang)
+    pool = [q for q in bank if q not in seen] or bank
     return random.choice(pool)
 
 
 def _solo_match(user):
     """No player near: a replay of a real answer near this rank, else the bot."""
     seen = _recent_questions(user["id"])
+    lang = lang_of(user)
     ghosts = db.all_("SELECT p.*, m.question FROM match_players p JOIN matches m ON m.id=p.match_id "
-                     "WHERE p.status='done' AND p.is_ghost=0 AND p.user_id IS NOT NULL AND p.user_id!=? "
-                     "AND abs(p.rp_before-?)<=400 ORDER BY random() LIMIT 30", user["id"], user["rp"])
+                     "WHERE p.status='done' AND p.is_ghost=0 AND p.user_id IS NOT NULL AND p.user_id!=? AND m.lang=? "
+                     "AND abs(p.rp_before-?)<=400 ORDER BY random() LIMIT 30", user["id"], lang, user["rp"])
     fresh = [gh for gh in ghosts if gh["question"] not in seen]
     gh = (fresh or ghosts or [None])[0]
     me = {"user_id": user["id"], "rp_before": user["rp"]}
     if gh is not None:
-        owner = db.one("SELECT rp FROM users WHERE id=?", gh["user_id"])
+        owner = rating(gh["user_id"], lang)
         return _create("ghost", gh["question"], [me, {
-            "user_id": gh["user_id"], "rp_before": owner["rp"] if owner else gh["rp_before"], "is_ghost": 1,
+            "user_id": gh["user_id"], "rp_before": owner["rp"] or gh["rp_before"], "is_ghost": 1,
             "status": "done", "duration": gh["duration"], "overall": gh["overall"], "scores": gh["scores"],
-            "extras": gh["extras"]}])
-    return _create("bot", _question([user["id"]]), [me, {"user_id": None, "rp_before": user["rp"], "status": "bot"}])
+            "extras": gh["extras"]}], lang)
+    return _create("bot", _question([user["id"]], lang), [me, {"user_id": None, "rp_before": user["rp"], "status": "bot"}], lang)
 
 
-def _create(kind, question, players):
+def _create(kind, question, players, lang="en"):
     mid = uuid.uuid4().hex[:16]
     now = time.time()
     reveal = now + COUNTDOWN
     speak = reveal + READ_S
-    db.run("INSERT INTO matches (id, season, kind, question, created, reveal_at, speak_at, deadline, status, day) "
-           "VALUES (?,?,?,?,?,?,?,?,'live',?)", mid, ranks.season_id(), kind, question, now, reveal, speak,
-           speak + MAX_S + GRACE, plans.today())
+    db.run("INSERT INTO matches (id, season, kind, question, created, reveal_at, speak_at, deadline, status, day, lang) "
+           "VALUES (?,?,?,?,?,?,?,?,'live',?,?)", mid, ranks.season_id(), kind, question, now, reveal, speak,
+           speak + MAX_S + GRACE, plans.today(), lang)
     for slot, p in enumerate(players):
         db.run("INSERT INTO match_players (match_id, slot, user_id, is_ghost, rp_before, status, duration, overall, "
                "scores, extras) VALUES (?,?,?,?,?,?,?,?,?,?)", mid, slot, p["user_id"], p.get("is_ghost", 0),
@@ -231,26 +270,43 @@ def analyse_answer(match_id, slot):
     try:
         worker.AUDIO.mkdir(parents=True, exist_ok=True)
         media.to_audio(src, audio, MAX_S)
-        d = rate.analyse(audio, cache=False, max_seconds=MAX_S)
+        mlang = db.one("SELECT lang FROM matches WHERE id=?", match_id)["lang"]
+        d = rate.analyse(audio, cache=False, max_seconds=MAX_S, lang=mlang)
         if d["n_words"] < worker.MIN_WORDS:
             raise worker.NotEnoughSpeech(d["n_words"])
-        res = worker.summary(d, SECTIONS)
+        from coach import profanity
+        warned = False
+        if p["user_id"] and profanity.find(d.get("text", "")):
+            if not strike(p["user_id"]):
+                raise Profane()                          # not the first time: a loss, never played to the opponent
+            warned = True                                # first time ever: only a warning
+        worker.check_topic(d, db.one("SELECT question FROM matches WHERE id=?", match_id)["question"], p["user_id"])
+        res = worker.check_integrity(d, audio, p["user_id"], SECTIONS)
         lv = res["level"]
         extras = {"words": d["n_words"], "fillers": d["fluency"].get("fillers", 0),
                   "mistakes": sum(len(s["mistakes"]) for s in d["grammar_results"]),
-                  "b2": lv["vocabulary"]["b2_plus"], "cefr": lv["cefr"]}
-        db.run("UPDATE match_players SET status='done', overall=?, scores=?, extras=? WHERE match_id=? AND slot=?",
-               res["overall"], json.dumps(res["sections"]), json.dumps(extras), match_id, slot)
+                  "b2": lv["vocabulary"]["b2_plus"], "cefr": lv["cefr"], "off_topic": bool(res.get("off_topic")),
+                  "topic": res.get("topic_verdict"), "text": d.get("text", "")[:2000],
+                  "profanity": "warn" if warned else None, "integrity": res.get("integrity")}
+        db.run("UPDATE match_players SET status='done', overall=?, scores=?, extras=?, audio_path=? "
+               "WHERE match_id=? AND slot=?", res["overall"], json.dumps(res["sections"]), json.dumps(extras),
+               str(audio), match_id, slot)
+        audio = None                                    # kept: one of the user's last 10 recordings
+        if p["user_id"]:
+            worker.trim_audios(p["user_id"])
     except Exception as e:
         if isinstance(e, worker.NotEnoughSpeech):
             error = f"not_enough_speech:{e.args[0]}"
+        elif isinstance(e, Profane):
+            error = "profanity"
         else:
             traceback.print_exc()
             error = "failed_sub"
         db.run("UPDATE match_players SET status='failed', error=? WHERE match_id=? AND slot=?", error, match_id, slot)
     finally:
         src.unlink(missing_ok=True)
-        audio.unlink(missing_ok=True)          # ranked answers are not kept (only their scores)
+        if audio is not None:
+            audio.unlink(missing_ok=True)      # failed answers keep no audio
     finish(match_id)
 
 
@@ -272,6 +328,7 @@ def _bot_scores(uid):
 
 def finish(match_id):
     """Decide the match once every answer is scored (or its time is over). Safe to call many times."""
+    shielded = set()
     new_awards = {}
     with LOCK:
         m = db.one("SELECT * FROM matches WHERE id=?", match_id)
@@ -305,7 +362,7 @@ def finish(match_id):
         for p, r, o in ((a, res[0], b), (b, res[1], a)):
             delta = None
             if p["user_id"] is not None and not p["is_ghost"] and r != "none" and m["kind"] != "friendly":
-                u = db.one("SELECT rp, best_rp FROM users WHERE id=?", p["user_id"])
+                u = rating(p["user_id"], m["lang"])
                 s = {"win": 1, "draw": .5, "loss": 0}[r]
                 expected = 1 / (1 + 10 ** ((o["rp_before"] - p["rp_before"]) / 400))
                 delta = round(K * (s - expected))
@@ -316,7 +373,11 @@ def finish(match_id):
                 if m["kind"] == "bot":
                     delta = round(delta / 2)
                 delta = max(delta, -u["rp"])               # never below 0 RP
-                db.run("UPDATE users SET rp=rp+?, best_rp=max(best_rp, rp+?) WHERE id=?", delta, delta, p["user_id"])
+                if delta < 0 and db.run("UPDATE users SET shields=shields-1 WHERE id=? AND shields>0",
+                                        p["user_id"]).rowcount:
+                    delta = 0                              # a rank shield (bought with credits) took the loss
+                    shielded.add(p["slot"])
+                add_rp(p["user_id"], m["lang"], delta)
             db.run("UPDATE match_players SET result=?, rp_delta=? WHERE match_id=? AND slot=?", r, delta, match_id,
                    p["slot"])
         db.run("UPDATE matches SET status='done' WHERE id=?", match_id)
@@ -330,7 +391,64 @@ def finish(match_id):
         row = db.one("SELECT extras FROM match_players WHERE match_id=? AND slot=?", match_id, p["slot"])
         extras = json.loads(row["extras"] or "{}")
         extras["new_awards"] = new_awards[p["slot"]]
+        if p["slot"] in shielded:
+            extras["shield"] = True
         db.run("UPDATE match_players SET extras=? WHERE match_id=? AND slot=?", json.dumps(extras), match_id, p["slot"])
+
+
+REPORTS_FOR_BAN, BAN_DAYS = 3, 7
+
+
+class Profane(Exception):
+    pass
+
+
+def strike(uid):
+    """Count one answer with bad language. True if it was the player's first ever (= only a warning)."""
+    first = db.one("SELECT profanity_strikes n FROM users WHERE id=?", uid)["n"] == 0
+    db.run("UPDATE users SET profanity_strikes=profanity_strikes+1 WHERE id=?", uid)
+    return first
+
+
+def ban_until(user):
+    b = user["ranked_ban_until"]
+    return b if b and b > time.time() else None
+
+
+def report(user, match_id):
+    """Report the opponent whose answer had bad language. 3 reports = 1-week Ranked ban."""
+    me = db.one("SELECT slot FROM match_players WHERE match_id=? AND user_id=? AND is_ghost=0", match_id, user["id"])
+    opp = db.one("SELECT user_id, error FROM match_players WHERE match_id=? AND user_id IS NOT NULL AND user_id!=? "
+                 "AND is_ghost=0", match_id, user["id"])
+    if me is None or opp is None or opp["error"] != "profanity":
+        return "not_found"
+    if db.one("SELECT 1 FROM reports WHERE match_id=? AND reporter_id=?", match_id, user["id"]):
+        return "already_reported"
+    db.run("INSERT INTO reports (match_id, reporter_id, reported_id, created) VALUES (?,?,?,?)",
+           match_id, user["id"], opp["user_id"], time.time())
+    db.run("UPDATE users SET reports_open=reports_open+1 WHERE id=?", opp["user_id"])
+    if db.one("SELECT reports_open n FROM users WHERE id=?", opp["user_id"])["n"] >= REPORTS_FOR_BAN:
+        db.run("UPDATE users SET reports_open=0, ranked_ban_until=? WHERE id=?", time.time() + BAN_DAYS * 86400, opp["user_id"])
+    return None
+
+
+FREE_EMOTES = ("sticker_wave", "sticker_thumbs")   # everyone can send these two
+EMOTE_GAP, EMOTE_MAX, EMOTE_SHOW = 2.5, 12, 6       # seconds between, per match, seconds visible
+
+
+def send_emote(user, match_id, sticker):
+    """A sticker during the match (not while answering). Returns None or an error key."""
+    me = db.one("SELECT slot FROM match_players WHERE match_id=? AND user_id=? AND is_ghost=0", match_id, user["id"])
+    m = db.one("SELECT status FROM matches WHERE id=?", match_id)
+    if me is None or m is None:
+        return "not_found"
+    if sticker not in FREE_EMOTES and sticker not in cosmetics.owned(user["id"], user):
+        return "not_owned"
+    sent = db.all_("SELECT at FROM match_emotes WHERE match_id=? AND slot=? ORDER BY at DESC", match_id, me["slot"])
+    if len(sent) >= EMOTE_MAX or (sent and time.time() - sent[0]["at"] < EMOTE_GAP):
+        return "emote_wait"
+    db.run("INSERT INTO match_emotes (match_id, slot, sticker, at) VALUES (?,?,?,?)", match_id, me["slot"], sticker, time.time())
+    return None
 
 
 def view(user, match_id):
@@ -363,16 +481,26 @@ def view(user, match_id):
             err = p["error"] or ""
             c.update(overall=p["overall"], scores=json.loads(p["scores"] or "null"), result=p["result"],
                      rp_delta=p["rp_delta"], rp_after=p["rp_before"] + (p["rp_delta"] or 0),
-                     rank_after=ranks.rank_of(p["rp_before"] + (p["rp_delta"] or 0)),
-                     error={"not_enough_speech": "ranked_no_speech"}.get(err.split(":")[0], err.split(":")[0]) or None, error_n=err.split(":")[1] if ":" in err else None,
-                     words=extras.get("words"), cefr=extras.get("cefr"))
+                     rank_after=rank_for(p["user_id"], p["rp_before"] + (p["rp_delta"] or 0)),
+                     error={"not_enough_speech": "ranked_no_speech", "profanity": "profanity_loss"}.get(err.split(":")[0], err.split(":")[0]) or None, error_n=err.split(":")[1] if ":" in err else None,
+                     words=extras.get("words"), cefr=extras.get("cefr"), off_topic=bool(extras.get("off_topic")), topic=extras.get("topic"),
+                     integrity=extras.get("integrity"))
+            if p["slot"] != me["slot"] and u is not None and u["share_answers"] and not p["is_ghost"]:
+                c["audio"] = bool(p["audio_path"]) and Path(p["audio_path"]).exists()   # the opponent shares answers
+            if p["slot"] != me["slot"] and err == "profanity" and p["user_id"]:
+                c["can_report"] = not db.one("SELECT 1 FROM reports WHERE match_id=? AND reporter_id=?", match_id, user["id"])
             if p["slot"] == me["slot"]:
+                c["profanity_warn"] = extras.get("profanity") == "warn"
                 c["new_awards"] = extras.get("new_awards", [])
+                c["audio"] = bool(p["audio_path"]) and Path(p["audio_path"]).exists()
+                c["shield"] = bool(extras.get("shield"))
         players.append(c)
     return {"id": m["id"], "kind": m["kind"], "status": m["status"], "now": now, "reveal_at": m["reveal_at"],
             "speak_at": m["speak_at"], "deadline": m["deadline"], "min_s": MIN_S, "max_s": MAX_S,
             "question": m["question"] if now >= m["reveal_at"] - 0.3 else None,
-            "my_state": me["status"], "players": players}
+            "my_state": me["status"], "players": players,
+            "emotes": [dict(e) for e in db.all_("SELECT slot, sticker, at FROM match_emotes WHERE match_id=? AND at>? ORDER BY at",
+                                                 match_id, now - EMOTE_SHOW)]}
 
 
 def overview(user):
@@ -388,7 +516,8 @@ def overview(user):
         history.append({"id": r["id"], "created": r["created"], "result": r["result"], "me": r["overall"],
                         "opp": r["opp"], "rp_delta": r["rp_delta"], "kind": r["kind"],
                         "opp_name": opp["username"] if opp else ("Speakoff Bot" if r["kind"] == "bot" else "—")})
-    return {"me": card(user), "season": ranks.season_id(), "season_no": ranks.season_number(), "season_end": end.isoformat(),
+    return {"me": card(user), "lang": lang_of(user), "langs": plans.learn_langs(user), "ban_until": ban_until(user), "max_rank": ranks.rank_of(max(user["best_rp"], user["rp"])),
+            "season": ranks.season_id(), "season_no": ranks.season_number(), "season_end": end.isoformat(),
             "limits": limits(user), "live": active_match(user["id"]), "history": history,
             "rules": {"read_s": READ_S, "min_s": MIN_S, "max_s": MAX_S}}
 
@@ -397,19 +526,22 @@ def leaderboard(user, scope="global", limit=50):
     """Highest-rated players this season (who played at least one ranked match), worldwide or in one country."""
     user = ensure_season(user)
     sid = ranks.season_id()
-    where, args = "u.season=? AND EXISTS (SELECT 1 FROM match_players p JOIN matches m ON m.id=p.match_id "                   "WHERE p.user_id=u.id AND p.is_ghost=0 AND m.kind!='friendly' AND m.season=?)", [sid, sid]
+    # one rank per player for all languages, so both boards mix every language (user, 2026-11-25)
+    src, rpc, sc = "users u", "u.rp", "u.season"
+    where, args = (f"{sc}=? AND EXISTS (SELECT 1 FROM match_players p JOIN matches m ON m.id=p.match_id "
+                   "WHERE p.user_id=u.id AND p.is_ghost=0 AND m.kind!='friendly' AND m.season=?)"), [sid, sid]
     if scope == "national":
         if not user["country"]:
             return {"scope": scope, "country": None, "board": [], "me_place": None}
         where += " AND u.country=?"
         args.append(user["country"])
-    rows = db.all_(f"SELECT u.* FROM users u WHERE {where} ORDER BY u.rp DESC, u.id LIMIT ?", *args, limit)
-    board = [{"username": u["username"], "rank": ranks.rank_of(u["rp"]), "me": u["id"] == user["id"],
+    rows = db.all_(f"SELECT u.* FROM {src} WHERE {where} ORDER BY {rpc} DESC, u.id LIMIT ?", *args, limit)
+    board = [{"username": u["username"], "rank": rank_for(u["id"], u["rp"]), "me": u["id"] == user["id"],
               "photo": f"/api/photo/{u['username']}?v={u['photo']}" if u["photo"] else None, "frame": u["frame"],
-              "country": u["country"]} for u in rows]
+              "country": u["country"], "name_style": cosmetics.worn(u, "name_style")} for u in rows]
     me_place = None
-    if db.one(f"SELECT 1 FROM users u WHERE {where} AND u.id=?", *args, user["id"]):
-        me_place = db.one(f"SELECT COUNT(*) n FROM users u WHERE {where} AND (u.rp>? OR (u.rp=? AND u.id<?))",
+    if db.one(f"SELECT 1 FROM {src} WHERE {where} AND u.id=?", *args, user["id"]):
+        me_place = db.one(f"SELECT COUNT(*) n FROM {src} WHERE {where} AND ({rpc}>? OR ({rpc}=? AND u.id<?))",
                           *args, user["rp"], user["rp"], user["id"])["n"] + 1
     return {"scope": scope, "country": user["country"], "board": board, "me_place": me_place,
             "me": {**card(user), "country": user["country"]}, "season_no": ranks.season_number()}

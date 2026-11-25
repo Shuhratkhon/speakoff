@@ -8,15 +8,29 @@ from coach.device import DEVICE
 model = WhisperModel("small.en", device=DEVICE, compute_type="float16" if DEVICE == "cuda" else "int8")
 
 FILLER_PROMPT = "Um, uh, hmm, I mean, like, you know."
+# other learning languages (2026-11-26): the multilingual "small" model, with a filler prompt in that language
+PROMPTS = {"ko": "음, 어, 그러니까, 저기요."}
+_multi = None
 
 
-def transcribe(path):
+def _multilingual():
+    global _multi
+    if _multi is None:
+        _multi = WhisperModel("small", device=DEVICE, compute_type="float16" if DEVICE == "cuda" else "int8")
+    return _multi
+
+
+def transcribe(path, lang="en"):
     """Return a list of {"word", "start", "end", "probability"} dicts for an audio file."""
     # segments is a generator: the audio is only processed while we loop over it.
     # Whisper was trained on clean subtitles, so it normally DELETES fillers (um, uh, hmm)
     # and some repetitions. Starting it with a prompt that contains fillers makes it
     # write down what was really said, which fluency needs.
-    segments, info = model.transcribe(path, word_timestamps=True, initial_prompt=FILLER_PROMPT)
+    if lang != "en":
+        segments, info = _multilingual().transcribe(str(path), language=lang, word_timestamps=True,
+                                                    initial_prompt=PROMPTS.get(lang))
+    else:
+        segments, info = model.transcribe(path, word_timestamps=True, initial_prompt=FILLER_PROMPT)
 
     words = []
     for segment in segments:

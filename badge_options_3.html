@@ -1,0 +1,206 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Badge options 3</title>
+<style>
+  body { margin: 0; background: #1E1F22; color: #E6EAF2; font-family: system-ui, sans-serif; padding: 18px; }
+  .opt { background: #2B2D30; border-radius: 16px; padding: 16px 18px; margin: 0 auto 14px; max-width: 900px; }
+  .opt h2 { margin: 0 0 4px; font-size: 18px; }
+  .opt p { margin: 0 0 12px; color: #9AA0AA; font-size: 14px; }
+  .row { display: flex; gap: 4px; justify-content: space-between; flex-wrap: wrap; }
+  .cell { text-align: center; font-size: 12px; color: #9AA0AA; width: 118px; }
+  .cell svg { display: block; margin: 0 auto 4px; overflow: visible; }
+  .small { display: flex; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #3a3d42; align-items: center; }
+  .small span { font-size: 12px; color: #9AA0AA; margin-right: 6px; }
+</style></head>
+<body><div id="out"></div>
+<script>
+const RANKS = [["copper", "#B87333"], ["bronze", "#8C5A2B"], ["silver", "#9EA7B3"], ["gold", "#D4A72C"],
+  ["platinum", "#3FB8AF"], ["diamond", "#4C8DF6"], ["master", "#9B59F5"]];
+const ROMAN = ["", "I", "II", "III"];
+const GOLD = "#E9B949", LEAF = "#3DBE6B", LEAF_DK = "#2A9653";
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16), to = amt > 0 ? 255 : 0, a = Math.abs(amt);
+  const ch = (v) => Math.round(v + (to - v) * a).toString(16).padStart(2, "0");
+  return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+}
+let N = 0;
+const rad = (d) => d * Math.PI / 180;
+const P = (p) => p.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+const label = (r) => r.div ? ROMAN[r.div] : String(r.wins ?? "★");
+
+// ---------- shared, high-quality parts ----------
+function defs(id, c, lvl) {
+  const rim = lvl >= 3 ? GOLD : c;                       // gold trim from Gold up, the rank's own metal below
+  const metal = (nm, b) => `<linearGradient id="${id}${nm}" x1="0" y1="0" x2=".25" y2="1">
+      <stop offset="0" stop-color="${shade(b, .75)}"/><stop offset=".22" stop-color="${shade(b, .2)}"/><stop offset=".48" stop-color="${shade(b, -.4)}"/>
+      <stop offset=".6" stop-color="${shade(b, .05)}"/><stop offset=".85" stop-color="${shade(b, .45)}"/><stop offset="1" stop-color="${shade(b, -.2)}"/></linearGradient>`;
+  return `<defs>
+    ${metal("r", rim)}${metal("m", c)}${metal("g", GOLD)}
+    <radialGradient id="${id}e" cx=".5" cy=".32" r=".75"><stop offset="0" stop-color="${shade(c, .45)}"/><stop offset=".55" stop-color="${c}"/><stop offset="1" stop-color="${shade(c, -.6)}"/></radialGradient>
+    <radialGradient id="${id}d" cx=".5" cy=".4" r=".7"><stop offset="0" stop-color="${shade(c, -.2)}"/><stop offset="1" stop-color="${shade(c, -.72)}"/></radialGradient>
+    <linearGradient id="${id}s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".75"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <linearGradient id="${id}w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".6" stop-color="${shade(c, .6)}"/><stop offset="1" stop-color="${shade(c, .1)}"/></linearGradient>
+    <linearGradient id="${id}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${shade(c, .25)}"/><stop offset=".5" stop-color="${shade(c, -.2)}"/><stop offset="1" stop-color="${shade(c, -.5)}"/></linearGradient>
+    <filter id="${id}f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="${id}h" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.4"/></filter>
+  </defs>`;
+}
+const glow = (id, c, lvl, shape) => lvl >= 4 ? `<g filter="url(#${id}f)" opacity="${lvl === 6 ? .95 : .6}">${shape.replace(/fill="[^"]*"/, `fill="${shade(c, .2)}"`)}</g>` : "";
+const sparkle = (x, y, s, op = 1) => `<g opacity="${op}"><path d="M${x} ${y - s} Q${x + s * .14} ${y - s * .14} ${x + s} ${y} Q${x + s * .14} ${y + s * .14} ${x} ${y + s} Q${x - s * .14} ${y + s * .14} ${x - s} ${y} Q${x - s * .14} ${y - s * .14} ${x} ${y - s} Z" fill="#FFFFFF"/></g>`;
+function gem(id, cx, cy, R, c, sides = 8) {
+  // a brilliant-cut gem: dark pavilion, lighter crown facets, a glowing table and a sparkle
+  const O = Array.from({ length: sides }, (_, i) => [cx + R * Math.cos(rad(-90 + i * 360 / sides)), cy + R * Math.sin(rad(-90 + i * 360 / sides))]);
+  const I = Array.from({ length: sides }, (_, i) => [cx + R * .48 * Math.cos(rad(-90 + i * 360 / sides)), cy + R * .48 * Math.sin(rad(-90 + i * 360 / sides))]);
+  const tones = [.55, .3, -.05, -.35, -.5, -.3, .05, .35];
+  let f = "";
+  for (let i = 0; i < sides; i++) { const j = (i + 1) % sides;
+    f += `<polygon points="${P([O[i], O[j], I[j], I[i]])}" fill="${shade(c, tones[i % 8])}"/>`; }
+  return `<g><polygon points="${P(O)}" fill="${shade(c, -.55)}" stroke="${shade(c, -.75)}" stroke-width="1.4" stroke-linejoin="round"/>${f}
+    <polygon points="${P(I)}" fill="url(#${id}e)"/><polygon points="${P(I)}" fill="#FFFFFF" opacity=".25"/>
+    <g stroke="#FFFFFF" stroke-width=".5" opacity=".45">${O.map((o, i) => `<line x1="${o[0].toFixed(1)}" y1="${o[1].toFixed(1)}" x2="${I[i][0].toFixed(1)}" y2="${I[i][1].toFixed(1)}"/>`).join("")}</g>
+    ${sparkle(cx - R * .3, cy - R * .35, R * .32)}</g>`;
+}
+function banner(id, c, r, y = 98, w = 44) {
+  const big = !r.div && String(r.wins).length > 2;
+  return `<g>
+    <path d="M${60 - w} ${y - 4} L${60 - w - 14} ${y - 4} L${60 - w - 8} ${y + 4} L${60 - w - 14} ${y + 12} L${60 - w + 6} ${y + 12} Z" fill="${shade(c, -.6)}"/>
+    <path d="M${60 + w} ${y - 4} L${60 + w + 14} ${y - 4} L${60 + w + 8} ${y + 4} L${60 + w + 14} ${y + 12} L${60 + w - 6} ${y + 12} Z" fill="${shade(c, -.6)}"/>
+    <path d="M${60 - w} ${y - 9} Q60 ${y - 15} ${60 + w} ${y - 9} L${60 + w} ${y + 9} Q60 ${y + 3} ${60 - w} ${y + 9} Z" fill="url(#${id}b)" stroke="${shade(c, -.75)}" stroke-width="1.3"/>
+    <path d="M${60 - w + 2} ${y - 7} Q60 ${y - 13} ${60 + w - 2} ${y - 7}" fill="none" stroke="#FFFFFF" stroke-width="1.2" opacity=".5"/>
+    <text x="60" y="${y + 3.5}" text-anchor="middle" font-size="${big ? 13 : 15}" font-weight="900" font-family="Georgia, 'Times New Roman', serif"
+      fill="#FFFFFF" stroke="${shade(c, -.8)}" stroke-width="2.4" paint-order="stroke" letter-spacing="1">${label(r)}</text></g>`;
+}
+function laurel(lvl, cy = 62, R = 54) {
+  if (lvl < 2) return "";
+  const leaf = "M0 0 C5 -4 5 -10 0 -15 C-5 -10 -5 -4 0 0Z";
+  const side = [118, 140, 162, 184].map((d, i) => {
+    const x = 60 + R * Math.cos(rad(d)), y = cy + R * Math.sin(rad(d));
+    return `<path d="${leaf}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${d + 180 - 32}) scale(${1 - i * .06})" fill="${i % 2 ? LEAF_DK : LEAF}"/>`;
+  }).join("");
+  const a = [60 + R * Math.cos(rad(108)), cy + R * Math.sin(rad(108))], b = [60 + R * Math.cos(rad(194)), cy + R * Math.sin(rad(194))];
+  const g = `<path d="M${a[0].toFixed(1)} ${a[1].toFixed(1)} A${R} ${R} 0 0 1 ${b[0].toFixed(1)} ${b[1].toFixed(1)}" fill="none" stroke="${LEAF_DK}" stroke-width="2" stroke-linecap="round"/>${side}`;
+  return `<g>${g}<g transform="translate(120 0) scale(-1 1)">${g}</g></g>`;
+}
+function wings(id, c, lvl, cx = 60, cy = 50, spread = 1) {
+  if (lvl < 4) return "";
+  const n = lvl === 4 ? 3 : lvl === 5 ? 4 : 5, k = spread * (.85 + (lvl - 4) * .12);
+  const feather = (i) => { const a = -62 + i * 22, L = (34 - i * 3) * k;
+    return `<path d="M0 0 C${-L * .18} ${-L * .3} ${-L * .25} ${-L * .75} ${-L * .05} ${-L} C${L * .12} ${-L * .7} ${L * .12} ${-L * .3} 0 0Z" transform="rotate(${a})"
+      fill="url(#${id}w)" stroke="${shade(c, -.55)}" stroke-width="1"/>
+      <path d="M0 -2 L${(-L * .06).toFixed(1)} ${(-L * .9).toFixed(1)}" transform="rotate(${a})" stroke="${shade(c, -.3)}" stroke-width=".7" opacity=".6"/>`; };
+  const one = Array.from({ length: n }, (_, i) => feather(n - 1 - i)).join("");
+  const tip = lvl === 6 ? `<path d="M0 0 L${-30 * k} ${-8 * k}" stroke="${GOLD}" stroke-width="2" stroke-linecap="round" transform="rotate(-62)"/>` : "";
+  return `<g transform="translate(${cx - 26} ${cy})">${one}${tip}</g><g transform="translate(${cx + 26} ${cy}) scale(-1 1)">${one}${tip}</g>`;
+}
+const crown = (id, y = 0, c = "#C084FC") => `<g transform="translate(0 ${y})">
+  <path d="M40 4 L37 -16 L49 -6 L60 -22 L71 -6 L83 -16 L80 4 Z" fill="url(#${id}g)" stroke="#8A5A0B" stroke-width="1.4" stroke-linejoin="round"/>
+  <rect x="40" y="0" width="40" height="7" rx="2" fill="url(#${id}g)" stroke="#8A5A0B" stroke-width="1.2"/>
+  <circle cx="60" cy="-22" r="3.4" fill="${c}" stroke="#8A5A0B" stroke-width=".8"/><circle cx="37" cy="-16" r="2.6" fill="#93C5FD"/><circle cx="83" cy="-16" r="2.6" fill="#93C5FD"/>
+  <circle cx="60" cy="3.5" r="2.4" fill="#F472B6"/>${sparkle(54, -10, 4, .9)}</g>`;
+const topOrn = (id, lvl, c, y) => lvl === 6 ? crown(id, y) : lvl === 5 ? `<g transform="translate(0 ${y})">${gem(id, 60, -8, 9, "#7DD3FC", 6)}</g>`
+  : lvl >= 3 ? `<g transform="translate(0 ${y})"><circle cx="60" cy="-6" r="6" fill="url(#${id}g)" stroke="#8A5A0B" stroke-width="1"/>${sparkle(58, -8, 3)}</g>` : "";
+
+// ---------- 11 · Royal Shield ----------
+function royal(r, lvl, c, id) {
+  const S = "M60 4 L97 17 Q100 50 92 70 Q82 93 60 106 Q38 93 28 70 Q20 50 23 17 Z";
+  const I = "M60 13 L88 23 Q90 50 84 66 Q76 85 60 96 Q44 85 36 66 Q30 50 32 23 Z";
+  return `${defs(id, c, lvl)}${glow(id, c, lvl, `<path d="${S}" fill="x"/>`)}${wings(id, c, lvl, 60, 46)}${laurel(lvl, 60, 54)}
+    <path d="${S}" fill="url(#${id}r)" stroke="${shade(lvl >= 3 ? GOLD : c, -.7)}" stroke-width="2"/>
+    <path d="${I}" fill="url(#${id}e)" stroke="${shade(c, -.7)}" stroke-width="1.4"/>
+    <path d="${I}" fill="none" stroke="#FFFFFF" stroke-width="1" opacity=".35" transform="translate(0 1)"/>
+    <path d="M60 22 L80 29 Q80 44 76 52 Q60 40 40 52 Q38 42 40 29 Z" fill="url(#${id}s)" opacity=".55"/>
+    ${gem(id, 60, 54, 17, shade(c, .15), 8)}${topOrn(id, lvl, c, 2)}${banner(id, c, r, 98, 34)}`;
+}
+
+// ---------- 12 · Gem Medallion ----------
+function medallion(r, lvl, c, id) {
+  const studs = Array.from({ length: 12 }, (_, i) => { const a = rad(i * 30 - 90);
+    return `<circle cx="${(60 + 40 * Math.cos(a)).toFixed(1)}" cy="${(54 + 40 * Math.sin(a)).toFixed(1)}" r="2.3" fill="url(#${id}r)" stroke="${shade(c, -.7)}" stroke-width=".6"/>`; }).join("");
+  const rays = lvl >= 3 ? Array.from({ length: 24 }, (_, i) => `<path d="M60 54 L${(60 + 56 * Math.cos(rad(i * 15))).toFixed(1)} ${(54 + 56 * Math.sin(rad(i * 15))).toFixed(1)} L${(60 + 56 * Math.cos(rad(i * 15 + 5))).toFixed(1)} ${(54 + 56 * Math.sin(rad(i * 15 + 5))).toFixed(1)} Z" fill="${GOLD}" opacity="${i % 2 ? .35 : .6}"/>`).join("") : "";
+  return `${defs(id, c, lvl)}${glow(id, c, lvl, `<circle cx="60" cy="54" r="46" fill="x"/>`)}${rays}${wings(id, c, lvl, 60, 50, .9)}${laurel(lvl, 58, 54)}
+    <circle cx="60" cy="54" r="46" fill="url(#${id}r)" stroke="${shade(lvl >= 3 ? GOLD : c, -.7)}" stroke-width="2"/>
+    <circle cx="60" cy="54" r="36" fill="url(#${id}d)" stroke="${shade(c, -.8)}" stroke-width="1.5"/>
+    ${lvl >= 1 ? studs : ""}
+    <circle cx="60" cy="54" r="33" fill="none" stroke="${shade(c, .4)}" stroke-width="1" opacity=".5"/>
+    ${gem(id, 60, 54, 25, c, 8)}
+    <path d="M24 40 A40 40 0 0 1 80 16" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" opacity=".45"/>
+    ${topOrn(id, lvl, c, 4)}${banner(id, c, r, 100, 36)}`;
+}
+
+// ---------- 13 · Winged Star ----------
+function wingstar(r, lvl, c, id) {
+  const base = lvl >= 3 ? GOLD : shade(c, .25);
+  let arms = "";
+  for (let i = 0; i < 5; i++) {
+    const a = rad(-90 + i * 72), w = rad(36), R = 38, ri = 16;
+    const tip = [60 + R * Math.cos(a), 54 + R * Math.sin(a)], l = [60 + ri * Math.cos(a - w), 54 + ri * Math.sin(a - w)], rr = [60 + ri * Math.cos(a + w), 54 + ri * Math.sin(a + w)];
+    arms += `<polygon points="${P([[60, 54], l, tip])}" fill="${shade(base, .45)}"/><polygon points="${P([[60, 54], tip, rr])}" fill="${shade(base, -.35)}"/>`;
+  }
+  const hex = Array.from({ length: 6 }, (_, i) => [60 + 46 * Math.cos(rad(i * 60 - 90)), 54 + 46 * Math.sin(rad(i * 60 - 90))]);
+  const hexIn = Array.from({ length: 6 }, (_, i) => [60 + 39 * Math.cos(rad(i * 60 - 90)), 54 + 39 * Math.sin(rad(i * 60 - 90))]);
+  const smallWings = lvl >= 1 && lvl < 4 ? wings(id, c, 4, 60, 52, .55 + lvl * .12) : wings(id, c, lvl, 60, 50, 1.05);
+  return `${defs(id, c, lvl)}${glow(id, c, lvl, `<polygon points="${P(hex)}" fill="x"/>`)}${smallWings}${laurel(lvl, 58, 54)}
+    <polygon points="${P(hex)}" fill="url(#${id}r)" stroke="${shade(lvl >= 3 ? GOLD : c, -.7)}" stroke-width="2" stroke-linejoin="round"/>
+    <polygon points="${P(hexIn)}" fill="url(#${id}e)" stroke="${shade(c, -.75)}" stroke-width="1.4" stroke-linejoin="round"/>
+    <g stroke="${shade(base, -.65)}" stroke-width="1" stroke-linejoin="round">${arms}</g>
+    <circle cx="60" cy="54" r="7" fill="${shade(c, -.4)}" stroke="${shade(base, .5)}" stroke-width="1.5"/>${sparkle(60, 54, 5)}
+    <path d="M28 40 L60 18 L92 40 Q60 30 28 40 Z" fill="#FFFFFF" opacity=".18"/>
+    ${topOrn(id, lvl, c, 6)}${banner(id, c, r, 100, 34)}`;
+}
+
+// ---------- 14 · Champion Cup ----------
+function cup(r, lvl, c, id) {
+  const bowl = "M30 10 H90 Q92 46 72 58 Q66 62 60 62 Q54 62 48 58 Q28 46 30 10 Z";
+  return `${defs(id, c, lvl)}${glow(id, c, lvl, `<path d="${bowl}" fill="x"/>`)}${laurel(lvl, 56, 52)}
+    <path d="M32 18 Q12 16 14 32 Q16 46 38 48" fill="none" stroke="url(#${id}m)" stroke-width="6" stroke-linecap="round"/>
+    <path d="M88 18 Q108 16 106 32 Q104 46 82 48" fill="none" stroke="url(#${id}m)" stroke-width="6" stroke-linecap="round"/>
+    <path d="${bowl}" fill="url(#${id}m)" stroke="${shade(c, -.7)}" stroke-width="2"/>
+    <rect x="28" y="6" width="64" height="8" rx="3" fill="${lvl >= 3 ? `url(#${id}g)` : `url(#${id}m)`}" stroke="${shade(c, -.7)}" stroke-width="1.4"/>
+    <path d="M38 16 Q36 36 48 50" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" opacity=".45"/>
+    ${gem(id, 60, 33, 12, lvl >= 4 ? shade(c, .2) : shade(c, -.1), 6)}
+    <path d="M54 61 H66 L68 76 H52 Z" fill="url(#${id}m)" stroke="${shade(c, -.7)}" stroke-width="1.4"/>
+    <rect x="42" y="75" width="36" height="7" rx="2" fill="${lvl >= 3 ? `url(#${id}g)` : `url(#${id}m)`}" stroke="${shade(c, -.7)}" stroke-width="1.2"/>
+    ${lvl >= 5 ? sparkle(96, 6, 6) + sparkle(22, 58, 4, .8) : lvl >= 3 ? sparkle(96, 8, 5) : ""}
+    ${lvl === 6 ? crown(id, -10) : ""}${banner(id, c, r, 96, 34)}`;
+}
+
+// ---------- 15 · Sun Crest ----------
+function sun(r, lvl, c, id) {
+  const n = 8 + lvl * 2;
+  let rays = "";
+  for (let i = 0; i < n; i++) {
+    const a = rad(-90 + i * 360 / n), w = rad(180 / n) * .8, L = i % 2 ? 44 : 54;
+    const tip = [60 + L * Math.cos(a), 54 + L * Math.sin(a)], l = [60 + 30 * Math.cos(a - w), 54 + 30 * Math.sin(a - w)], rr = [60 + 30 * Math.cos(a + w), 54 + 30 * Math.sin(a + w)];
+    const b = lvl >= 3 ? GOLD : c;
+    rays += `<polygon points="${P([l, tip, [60 + 30 * Math.cos(a), 54 + 30 * Math.sin(a)]])}" fill="${shade(b, .4)}"/><polygon points="${P([[60 + 30 * Math.cos(a), 54 + 30 * Math.sin(a)], tip, rr])}" fill="${shade(b, -.3)}"/>`;
+  }
+  return `${defs(id, c, lvl)}${glow(id, c, lvl, `<circle cx="60" cy="54" r="44" fill="x"/>`)}${laurel(lvl, 58, 56)}
+    <g stroke="${shade(lvl >= 3 ? GOLD : c, -.65)}" stroke-width=".8" stroke-linejoin="round">${rays}</g>
+    <circle cx="60" cy="54" r="32" fill="url(#${id}r)" stroke="${shade(lvl >= 3 ? GOLD : c, -.7)}" stroke-width="2"/>
+    <circle cx="60" cy="54" r="25" fill="url(#${id}e)" stroke="${shade(c, -.7)}" stroke-width="1.4"/>
+    ${gem(id, 60, 54, 15, shade(c, .1), 8)}
+    <path d="M38 42 A24 24 0 0 1 70 31" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" opacity=".5"/>
+    ${lvl >= 5 ? sparkle(100, 14, 6) + sparkle(18, 20, 4, .8) : ""}${topOrn(id, lvl, c, 0)}${banner(id, c, r, 100, 34)}`;
+}
+
+const STYLES = [
+  ["11 · Royal Shield", "A gold-trimmed shield with a glossy enamel face and a cut gem in the middle; the stage is on a ribbon. Gold ball on top from Gold, feathered wings and a glow from Platinum, a gem from Diamond, a jewelled crown for Master.", royal],
+  ["12 · Gem Medallion", "A heavy round medallion with studs around the rim and a big brilliant-cut gem. Gold rays behind it from Gold, wings from Platinum, a crown for Master.", medallion],
+  ["13 · Winged Star", "A hexagon plate with a 3D star (light and dark sides on every point). Small wings from Bronze that grow each rank, a gold star from Gold, a crown for Master.", wingstar],
+  ["14 · Champion Cup", "A shining trophy cup with handles and a gem on the front; the stage is on the ribbon. Gold lip and base from Gold, a glow from Platinum, a crown for Master.", cup],
+  ["15 · Sun Crest", "A gem in a metal ring with a sun of 3D rays around it: 10 rays at Copper, 2 more each rank. Gold rays from Gold, a glow from Platinum, a crown for Master.", sun],
+];
+const list = [["copper", 3], ["bronze", 2], ["silver", 1], ["gold", 2], ["platinum", 3], ["diamond", 1], ["master", null]];
+const name = (k) => k[0].toUpperCase() + k.slice(1);
+function badge(fn, rank, div, size) {
+  const lvl = RANKS.findIndex((x) => x[0] === rank), c = RANKS[lvl][1], r = { rank, div, wins: div ? null : 27 };
+  return `<svg width="${size}" height="${size}" viewBox="-20 -30 160 150">${fn(r, lvl, c, "b" + (++N))}</svg>`;
+}
+let h = "";
+for (const [title, about, fn] of STYLES) {
+  h += `<div class="opt"><h2>${title}</h2><p>${about} Minimal green laurel from Silver.</p><div class="row">${list.map(([k, d]) =>
+    `<div class="cell">${badge(fn, k, d, 112)}${name(k)} ${d ? ROMAN[d] : "27"}</div>`).join("")}</div>
+    <div class="small"><span>In lists:</span>${list.map(([k, d]) => badge(fn, k, d, 30)).join("")}</div></div>`;
+}
+document.getElementById("out").innerHTML = h;
+</script></body></html>

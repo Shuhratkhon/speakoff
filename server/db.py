@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     duration      REAL,
     trimmed       INTEGER NOT NULL DEFAULT 0,
     src_path      TEXT,                         -- the upload (deleted after analysis)
-    audio_path    TEXT,                         -- kept 14 / 30 / 90 days by plan
+    audio_path    TEXT,                         -- the user's last 10 recordings keep their audio
     audio_deleted INTEGER NOT NULL DEFAULT 0,
     data          TEXT,                         -- analysis (JSON)
     overall       INTEGER,
@@ -119,6 +119,49 @@ CREATE TABLE IF NOT EXISTS daily_claims (       -- Speakoff credits collected fr
     claimed_at TEXT NOT NULL,
     PRIMARY KEY (user_id, day)
 );
+CREATE TABLE IF NOT EXISTS credit_buys (        -- what credits were spent on (server/shop.py)
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item    TEXT NOT NULL,
+    day     TEXT NOT NULL,
+    created REAL NOT NULL,
+    price   INTEGER NOT NULL,
+    ref     TEXT
+);
+CREATE INDEX IF NOT EXISTS cb_user_day ON credit_buys(user_id, day);
+CREATE TABLE IF NOT EXISTS reports (            -- "Report" after a ranked answer with bad language
+    match_id    TEXT NOT NULL,
+    reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reported_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created     REAL NOT NULL,
+    PRIMARY KEY (match_id, reporter_id)
+);
+CREATE TABLE IF NOT EXISTS voice_prints (       -- voice fingerprints of a player's honest answers (coach/anticheat.py)
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created REAL NOT NULL,
+    emb     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS vp_user ON voice_prints(user_id, created);
+CREATE TABLE IF NOT EXISTS lang_ratings (       -- Ranked RP for languages other than English (English: users.rp)
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    lang    TEXT NOT NULL,
+    rp      INTEGER NOT NULL DEFAULT 0,
+    best_rp INTEGER NOT NULL DEFAULT 0,
+    season  TEXT,
+    PRIMARY KEY (user_id, lang)
+);
+CREATE TABLE IF NOT EXISTS user_items (         -- cosmetics bought with credits (server/cosmetics.py)
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item    TEXT NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (user_id, item)
+);
+CREATE TABLE IF NOT EXISTS match_emotes (       -- stickers sent during a ranked match (before speaking / while scoring)
+    match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    slot     INTEGER NOT NULL,
+    sticker  TEXT NOT NULL,
+    at       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS me_match ON match_emotes(match_id, at);
 CREATE TABLE IF NOT EXISTS skill_grants (       -- one skill per 20 ranked matches (server/rewards.py)
     user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     block     INTEGER NOT NULL,                 -- 1 = matches 1-20, 2 = matches 21-40, ...
@@ -137,6 +180,12 @@ CREATE TABLE IF NOT EXISTS user_awards (        -- achievement tiers, award = "<
 """
 
 # columns added after the first version (added to an old database on start)
+RECORDING_COLUMNS = {
+    "keep_forever": "INTEGER NOT NULL DEFAULT 0",  # audio kept on top of the last 10 (bought with credits)
+    "learn_lang": "TEXT NOT NULL DEFAULT 'en'",    # the language spoken in this recording (coach/korean.py, ...)
+    "is_mock": "INTEGER NOT NULL DEFAULT 0",       # mock IELTS test (server/mock.py)
+    "mock_set": "TEXT",
+}
 USER_COLUMNS = {
     "photo": "INTEGER NOT NULL DEFAULT 0",         # 1 = server/data/photos/<id>.jpg exists
     "frame": "TEXT NOT NULL DEFAULT 'none'",
@@ -149,6 +198,21 @@ USER_COLUMNS = {
     "credits": "INTEGER NOT NULL DEFAULT 0",       # Speakoff credits (server/credits.py)
     "google_sub": "TEXT",                          # Sign in with Google (server/oauth.py)
     "apple_sub": "TEXT",                           # Sign in with Apple
+    "shields": "INTEGER NOT NULL DEFAULT 0",
+    "share_answers": "INTEGER NOT NULL DEFAULT 0",
+    "profanity_strikes": "INTEGER NOT NULL DEFAULT 0",  # answers with bad language (the first one is only a warning)
+    "reports_open": "INTEGER NOT NULL DEFAULT 0",       # reports since the last ban (3 = 1-week Ranked ban)
+    "ranked_ban_until": "REAL",
+    "display_name": "TEXT",                         # the player's own name (asked after sign-up)
+    "learn_langs": "TEXT",
+    "country_changed": "TEXT",                         # season id of the last country change (once a season)                             # every language the player learns, comma list (plan limit)
+    "learn_lang": "TEXT NOT NULL DEFAULT 'en'",     # language being learned (English now; ko/es/de/ja coming)  # 1 = opponents may play this player's ranked answers
+    "plan_credit_month": "TEXT",
+    "activity": "TEXT",                            # the screen the player is on (shown to friends while online)
+    "plan_bonus_given": "TEXT",                    # monthly plans whose one-time bonus was given ("plus,pro")                   # last month Plus / Pro bonus credits were given (YYYY-MM)
+    "name_style": "TEXT NOT NULL DEFAULT ''",      # cosmetics being worn (server/cosmetics.py)
+    "entrance": "TEXT NOT NULL DEFAULT ''",
+    "sticker": "TEXT NOT NULL DEFAULT ''",       # rank shields bought with credits
     "has_password": "INTEGER NOT NULL DEFAULT 1",  # 0 = made with Google / Apple and no password set yet                             # ISO 3166 code (e.g. KR, UZ) for the national leaderboard                           # for "online" in the friends list
 }
 
@@ -173,6 +237,13 @@ def init():
     for name, kind in USER_COLUMNS.items():
         if name not in have:
             c.execute(f"ALTER TABLE users ADD COLUMN {name} {kind}")
+    for table in ("matches", "ranked_queue"):           # the language a match / queue entry is in
+        if "lang" not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+    have = {r["name"] for r in c.execute("PRAGMA table_info(recordings)")}
+    for name, kind in RECORDING_COLUMNS.items():
+        if name not in have:
+            c.execute(f"ALTER TABLE recordings ADD COLUMN {name} {kind}")
     # first version of skills / achievements (2026-11-23 morning): replaced by stacking skills and tiers
     c.execute("DELETE FROM user_awards WHERE kind='skill' OR award NOT LIKE '%:%'")
     c.commit()

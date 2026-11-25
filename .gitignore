@@ -9,6 +9,8 @@ __pycache__/
 # Large or private files (not for GitHub)
 # training datasets (~840 MB)
 data/
+# ...but the Korean word list (NIKL/TOPIK, 330 KB) is part of the app
+!coach/data/
 # trained models (~3.4 GB), see README "Models"
 models/
 # run logs and cached analyses of recordings

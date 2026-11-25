@@ -1,0 +1,121 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Laurel options</title><style>
+body{margin:0;background:#1E1F22;color:#E6EAF2;font-family:system-ui,sans-serif;padding:20px}
+.opt{background:#2B2D30;border-radius:16px;padding:16px 18px;margin:0 auto 14px;max-width:640px}
+.opt h2{margin:0 0 4px;font-size:18px} .opt p{margin:0 0 10px;color:#9AA0AA;font-size:14px}
+.row{display:flex;gap:12px;justify-content:space-around;flex-wrap:wrap;align-items:flex-end}
+.cell{text-align:center;font-size:12px;color:#9AA0AA}
+/* rank emblems (SVG badge; the old shape/background rules no longer apply) */
+svg.emblem, .card svg.emblem, .notice svg.emblem { clip-path: none; background: none; display: block; overflow: visible; flex: none; max-width: none !important; max-height: none !important;
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,.35)); }
+svg.emblem::after { content: none; }
+.prank svg.emblem, .board-row svg.emblem, .row svg.emblem { display: inline-block; vertical-align: middle; }
+.em-sweep { animation: emSweep 4.5s ease-in-out infinite; }
+@keyframes emSweep { 0%, 55% { transform: skewX(-20deg) translateX(0); } 85%, 100% { transform: skewX(-20deg) translateX(190px); } }
+.em-aura { animation: emAura 2.6s ease-in-out infinite; transform-origin: 50px 56px; }
+@keyframes emAura { 0%, 100% { opacity: .15; transform: scale(.92); } 50% { opacity: .32; transform: scale(1.04); } }
+svg.rk-master { filter: drop-shadow(0 3px 6px rgba(0,0,0,.35)) drop-shadow(0 0 6px rgba(155,89,245,.55)); }
+svg.rk-diamond { filter: drop-shadow(0 3px 6px rgba(0,0,0,.35)) drop-shadow(0 0 4px rgba(76,141,246,.45)); }
+</style></head><body><div id="out"></div><script>
+const t = (k) => ({rank_silver:"Silver",rank_gold:"Gold",rank_diamond:"Diamond",rank_master:"Master",rank_platinum:"Platinum"})[k] || k;
+const RANKS = [
+  ["copper", "#B87333"], ["bronze", "#8C5A2B"], ["silver", "#9EA7B3"], ["gold", "#D4A72C"],
+  ["platinum", "#3FB8AF"], ["diamond", "#4C8DF6"], ["master", "#9B59F5"],
+];
+const RANK_COLOR = Object.fromEntries(RANKS);
+const ROMAN = ["", "I", "II", "III"];
+function rankLabel(r) { return r ? `${t("rank_" + r.rank)}${r.div ? " " + ROMAN[r.div] : r.wins != null ? " " + r.wins : ""}` : ""; }
+function shade(hex, amt) {
+  // amt > 0 mixes with white, amt < 0 with black
+  const n = parseInt(hex.slice(1), 16), to = amt > 0 ? 255 : 0, a = Math.abs(amt);
+  const ch = (v) => Math.round(v + (to - v) * a).toString(16).padStart(2, "0");
+  return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+}
+// laurel wreath beside the emblem (Silver and up): 3 designs, LAUREL_STYLE picks one
+let LAUREL_STYLE = "classic";
+function laurelSvg(style, id, xd, c, lvl) {
+  const R = 52, CX = 50, CY = 60, rad = (d) => d * Math.PI / 180;
+  const at = (deg) => [CX + R * Math.cos(rad(deg)), CY + R * Math.sin(rad(deg))];
+  const leaf = (L, W) => `M0 0 C${W} ${-L * .3} ${W} ${-L * .72} 0 ${-L} C${-W} ${-L * .72} ${-W} ${-L * .3} 0 0Z`;
+  const half = (L, W) => `M0 0 C${W} ${-L * .3} ${W} ${-L * .72} 0 ${-L}Z`;
+  const place = (deg, tilt, L, W, extra = "") => {
+    const [x, y] = at(deg);
+    // the leaf drawing points up; deg + 180 turns it along the branch (growing upwards), tilt < 0 leans it outwards
+    return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${(deg + 180 + tilt).toFixed(1)})">
+      <path d="${leaf(L, W)}"/><path d="${half(L, W)}" fill="#FFFFFF" opacity=".28" stroke="none"/>
+      <path d="M0 -1 L0 ${(-L * .88).toFixed(1)}" fill="none" stroke="${xd}" stroke-width=".7" opacity=".55"/>${extra}</g>`;
+  };
+  const [a0, a1] = at(102), [b0, b1] = at(222);
+  const stem = `<path d="M${a0.toFixed(1)} ${a1.toFixed(1)} A${R} ${R} 0 0 1 ${b0.toFixed(1)} ${b1.toFixed(1)}" fill="none" stroke="url(#${id}l)" stroke-width="2.4" stroke-linecap="round"/>`;
+  let side = "";
+  if (style === "classic") {
+    // laurel: 7 almond leaves in pairs, outer and inner, with a top leaf
+    [110, 125, 140, 155, 170, 185, 200].forEach((d, i) => { side += place(d, 42, 15, 5) + place(d + 5, -38, 12, 4); });
+    side += place(214, 0, 15, 5);
+  } else if (style === "olive") {
+    // olive: many slender leaves and small olives in the rank colour
+    [108, 118, 128, 138, 148, 158, 168, 178, 188, 198, 208].forEach((d, i) => { side += place(d, i % 2 ? -34 : 38, 12, 3); });
+    side += place(218, 0, 12, 3);
+    side += [128, 163, 196].map((d) => { const [x, y] = at(d); const ox = Math.cos(rad(d)) * 7, oy = Math.sin(rad(d)) * 7;
+      return `<ellipse cx="${(x + ox).toFixed(1)}" cy="${(y + oy).toFixed(1)}" rx="3.3" ry="4" fill="${c}" stroke="${xd}" stroke-width=".8"/>
+        <circle cx="${(x + ox - 1).toFixed(1)}" cy="${(y + oy - 1.4).toFixed(1)}" r="1" fill="#FFFFFF" opacity=".7" stroke="none"/>`; }).join("");
+  } else {
+    // royal: broad two-tone leaves layered like feathers, all leaning out
+    [112, 130, 148, 166, 184, 202].forEach((d) => { side += place(d, 30, 19, 7); });
+    side += place(216, 4, 17, 6);
+  }
+  const ribbon = style === "classic" ? "" : `<g stroke="${xd}" stroke-width="1.1" stroke-linejoin="round">
+      <path d="M44 104 L32 122 L37 120 L39 126 L48 108 Z" fill="${shade(c, -.15)}"/><path d="M56 104 L68 122 L63 120 L61 126 L52 108 Z" fill="${shade(c, -.15)}"/>
+      <path d="M41 103 Q50 98 59 103 Q50 110 41 103 Z" fill="${shade(c, .25)}"/></g>`;
+  const g = `<g fill="url(#${id}l)" stroke="${xd}" stroke-width=".9" stroke-linejoin="round">${stem}${side}</g>`;
+  return `<g class="laurel">${g}<g transform="translate(100 0) scale(-1 1)">${g}</g>${ribbon}</g>`;
+}
+let embN = 0;
+const SHIELD = "M50 6 L90 21 V60 C90 84 72 100 50 108 C28 100 10 84 10 60 V21 Z";
+const SHIELD_IN = "M50 15 L81 27 V60 C81 79 67 91 50 98 C33 91 19 79 19 60 V27 Z";
+function emblem(r, size = 52) {
+  const rank = r.rank, c = RANK_COLOR[rank], lvl = RANKS.findIndex((x) => x[0] === rank);
+  const small = size < 30;                      // in lists: only the shield, so it stays readable
+  const id = `em${++embN}`, lt = shade(c, .55), md = shade(c, .18), dk = shade(c, -.45), xd = shade(c, -.65);
+  const gold = "#F6D365", goldDk = "#B7791F";
+  const laurel = lvl >= 2 && !small ? laurelSvg(LAUREL_STYLE, id, xd, c, lvl) : "";
+  const wing = (m) => `<path transform="${m}" d="M14 34 C-4 30 -14 40 -16 50 C-8 46 -2 47 2 50 C-8 53 -13 60 -13 68 C-5 62 1 62 5 64 C-2 68 -4 75 -2 82 C4 74 10 72 14 72 Z" fill="url(#${id}w)" stroke="${xd}" stroke-width="1.4"/>`;
+  const wings = lvl >= 4 && !small ? `${wing("")}${wing("translate(100 0) scale(-1 1)")}` : "";
+  const top = small ? "" : lvl === 3 ? `<path d="M50 -9 l4.4 9 9.9 1.4-7.2 7 1.7 9.8-8.8-4.6-8.8 4.6 1.7-9.8-7.2-7 9.9-1.4z" fill="url(#${id}g)" stroke="${goldDk}" stroke-width="1.2"/>`
+    : lvl === 5 ? `<g stroke="${xd}" stroke-width="1.2"><path d="M50 -10 L62 2 L50 16 L38 2 Z" fill="#BFE3FF"/><path d="M50 -10 L62 2 L50 4 Z" fill="#FFFFFF" opacity=".8"/><path d="M38 2 L50 4 L50 16 Z" fill="#7FB6F5"/></g>`
+    : lvl === 6 ? `<path d="M31 14 L28 -6 L40 4 L50 -12 L60 4 L72 -6 L69 14 Z" fill="url(#${id}g)" stroke="${goldDk}" stroke-width="1.4" stroke-linejoin="round"/>
+        <circle cx="50" cy="-12" r="3.4" fill="#F0ABFC" stroke="${goldDk}" stroke-width="1"/><circle cx="28" cy="-6" r="2.6" fill="#93C5FD"/><circle cx="72" cy="-6" r="2.6" fill="#93C5FD"/>` : "";
+  const studs = lvl >= 1 ? [[50, 10.5], [85.5, 24], [14.5, 24]].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="2.3" fill="${lt}" stroke="${xd}" stroke-width=".8"/>`).join("") : "";
+  const label = r.div ? ROMAN[r.div] : r.wins ? String(r.wins) : "★";
+  return `<svg class="emblem rk-${rank}" style="width:${size}px;height:${Math.round(size * 1.12)}px" viewBox="${small ? "4 2 92 110" : "-20 -16 140 140"}" aria-hidden="true">
+    <defs>
+      <linearGradient id="${id}o" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="${lt}"/><stop offset=".45" stop-color="${c}"/><stop offset="1" stop-color="${dk}"/></linearGradient>
+      <radialGradient id="${id}i" cx=".5" cy=".3" r=".8"><stop offset="0" stop-color="${md}"/><stop offset=".7" stop-color="${c}"/><stop offset="1" stop-color="${dk}"/></radialGradient>
+      <linearGradient id="${id}w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".5" stop-color="${lt}"/><stop offset="1" stop-color="${c}"/></linearGradient>
+      <linearGradient id="${id}l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${lvl >= 3 ? gold : "#E5E7EB"}"/><stop offset="1" stop-color="${lvl >= 3 ? goldDk : "#9CA3AF"}"/></linearGradient>
+      <linearGradient id="${id}g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFF7C2"/><stop offset=".5" stop-color="${gold}"/><stop offset="1" stop-color="${goldDk}"/></linearGradient>
+      <clipPath id="${id}c"><path d="${SHIELD}"/></clipPath>
+    </defs>
+    ${lvl === 6 && !small ? `<circle cx="50" cy="56" r="62" fill="${c}" opacity=".22" class="em-aura"/>` : ""}
+    ${wings}${laurel}
+    <path d="${SHIELD}" fill="url(#${id}o)" stroke="${xd}" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="${SHIELD_IN}" fill="url(#${id}i)" stroke="${lt}" stroke-width="2.2" stroke-linejoin="round" opacity=".95"/>
+    <g clip-path="url(#${id}c)">
+      <path d="M10 21 L50 6 L90 21 V40 C70 30 34 32 10 46 Z" fill="#FFFFFF" opacity=".22"/>
+      <rect class="em-sweep" x="-60" y="-10" width="22" height="140" fill="#FFFFFF" opacity=".45" transform="skewX(-20)"/>
+    </g>
+    ${studs}${top}
+    <text x="50" y="${r.div ? 70 : 72}" text-anchor="middle" font-size="${r.div ? (r.div === 3 ? 30 : 34) : label.length >= 4 ? 22 : label.length === 3 ? 28 : label.length === 2 ? 34 : 38}" font-weight="900"
+      font-family="inherit" fill="#FFFFFF" stroke="${xd}" stroke-width="3" paint-order="stroke" letter-spacing="-1">${label}</text>
+  </svg>`;
+}
+
+const list = [{rank:"silver",div:2},{rank:"gold",div:1},{rank:"platinum",div:3},{rank:"diamond",div:1},{rank:"master",wins:27}];
+const info = {classic:["1 · Classic laurel","Paired almond leaves (outer and inner) with veins and a shine, like an Olympic wreath."],
+  olive:["2 · Olive wreath","Many slim leaves with small olives in the rank's colour, tied with a ribbon under the shield."],
+  royal:["3 · Royal wreath","Big two-tone leaves layered like feathers, tied with a ribbon. Boldest of the three."]};
+let h = "";
+for (const st of ["classic","olive","royal"]) { LAUREL_STYLE = st;
+  h += `<div class="opt"><h2>${info[st][0]}</h2><p>${info[st][1]}</p><div class="row">${list.map(r=>`<div class="cell">${emblem(r,104)}<div>${rankLabel(r)}</div></div>`).join("")}</div></div>`; }
+document.getElementById("out").innerHTML = h;
+</script></body></html>

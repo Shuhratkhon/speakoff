@@ -69,3 +69,12 @@ because of their size. They are needed to run the scoring: `models/grammar-speec
 ## Status
 
 Website version working on a local server. Next: put the server online, then the App Store and Google Play apps.
+
+## Third-party models
+
+The anti-cheat voice check uses [microsoft/wavlm-base-plus-sv](https://huggingface.co/microsoft/wavlm-base-plus-sv)
+(Microsoft UniSpeech, CC BY-SA 3.0), run only on our server.
+
+Korean: grammar corrections by [Qwen/Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B) (Apache-2.0), morphemes by
+[Kiwi](https://github.com/bab2min/kiwipiepy) (LGPL-2.1), word levels from the NIKL / TOPIK vocabulary lists collected in
+[combined_korean_vocabulary_list](https://github.com/julienshim/combined_korean_vocabulary_list).

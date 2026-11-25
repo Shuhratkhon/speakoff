@@ -17,7 +17,7 @@ The microphone and camera work on `localhost`; on a public server they need HTTP
 | | |
 |---|---|
 | `server/app.py` | the website's API: sign up / sign in, recordings, results, progress, profile, plans |
-| `server/worker.py` | analyses one recording at a time; deletes old recording files (Free 14 / Plus 30 / Pro 90 days) |
+| `server/worker.py` | analyses one recording at a time; keeps the audio of each user's last 10 recordings (normal + ranked), results stay |
 | `server/plans.py` | plan limits and prices |
 | `server/media.py` | file length, video → small audio file |
 | `server/mailer.py` | sends sign-up codes by email |

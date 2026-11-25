@@ -246,7 +246,7 @@ def stats(uid, season=None):
     avg = {s: round(_avg(done, s)) for s in SECTIONS}
     overalls = [r["overall"] for r in done]
     consistency = max(0, min(100, round(100 - 4 * statistics.pstdev(overalls)))) if len(overalls) >= 2 else 0
-    win_rate = round(100 * wins / n, 1) if n else 0
+    win_rate = round(100 * (wins + results.count("draw")) / n, 1) if n else 0   # a draw counts as a win here
     cur = 0
     for res in reversed(results):
         if res == "draw" or (cur > 0 and res != "win") or (cur < 0 and res != "loss"):
@@ -259,5 +259,6 @@ def stats(uid, season=None):
         "longest_streak": _longest(results), "current_streak": cur,
         "upsets": sum(1 for r in rows if r["result"] == "win" and r["kind"] != "bot" and (r["opp_rp"] or 0) > r["rp_before"]),
         "perfect": sum(1 for r in done if r["overall"] >= 90),
+        "talk_time": round(statistics.mean([r["duration"] for r in done if r["duration"]])) if any(r["duration"] for r in done) else 0,
         "radar": {**avg, "consistency": consistency, "win_rate": round(win_rate)},
     }

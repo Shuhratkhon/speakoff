@@ -5,7 +5,7 @@ that day is simply greyed out on the calendar (its reward is lost) and the count
   days 1-13 : 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15 credits (+1 every 2 days)
   day 14    : the "Streak" frame (only on day 14; missed = no frame)
   day 15+   : 15 credits
-  every 30th day (30, 60, 90 ...): 100 credits
+  every 30th day (30, 60, 90 ...): 100 credits; day 30 also gives the 🎤 sticker (decided 2026-11-24)
 The Home bar shows days 1-14 (swipe to scroll, today centred) and a "Future rewards" box in place of day 15.
 """
 
@@ -60,4 +60,10 @@ def claim(user):
            datetime.now(timezone.utc).isoformat(timespec="seconds"))
     if amount:
         db.run("UPDATE users SET credits=credits+? WHERE id=?", amount, user["id"])
-    return {"kind": kind, "amount": amount}, state(user)
+    got = {"kind": kind, "amount": amount}
+    from server import cosmetics
+    for item, day in cosmetics.REWARD_ITEMS.items():
+        if st["current"] == day:                         # day 30: also the 🎤 sticker
+            cosmetics.grant(user["id"], item)
+            got["sticker"] = item
+    return got, state(user)

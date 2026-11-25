@@ -23,7 +23,7 @@ from flask import Flask, abort, g, jsonify, request, send_file, send_from_direct
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 from coach.i18n import LANGS, VOICES, ui  # noqa: E402
-from server import credits, db, friends, oauth, mailer, plans, questions, ranked, ranks, rewards, worker  # noqa: E402
+from server import cosmetics, credits, db, friends, mock, oauth, mailer, plans, questions, ranked, ranks, rewards, shop, worker  # noqa: E402
 
 FRONT = ROOT / "front_end"
 SECTIONS = ["fluency", "grammar", "vocabulary", "pronunciation"]
@@ -60,7 +60,18 @@ def now_iso():
 
 def current_user():
     uid = session.get("uid")
-    return db.one("SELECT * FROM users WHERE id=?", uid) if uid else None
+    u = db.one("SELECT * FROM users WHERE id=?", uid) if uid else None
+    return shop.member_credits(shop.expire(u)) if u else None
+
+
+# screen -> what friends see (server/friends.py adds "in a match" / "looking for a match" itself)
+ACTIVITY = {"home": "online", "record": "record", "mock": "mock", "result": "results", "progress": "results",
+            "ranked": "ranked", "leaderboard": "ranked", "match": "ranked", "shop": "shop", "profile": "online",
+            "plans": "online", "friends": "online", "u": "online", "challenge": "online"}
+
+
+LEARN_LANGS = ("en", "ko")     # languages a player can learn now (Spanish, German, Japanese: soon)
+FULL_LANGS = ("en",)            # languages with daily question, mock test and Ranked (Korean: phase 3)
 
 
 def login_required(f):
@@ -71,6 +82,9 @@ def login_required(f):
             return err("not_signed_in", 401)
         if not g.user["last_seen"] or time.time() - g.user["last_seen"] > 30:      # "online" for friends
             db.run("UPDATE users SET last_seen=? WHERE id=?", time.time(), g.user["id"])
+        act = ACTIVITY.get(request.headers.get("X-Act", ""))
+        if act and act != g.user["activity"]:
+            db.run("UPDATE users SET activity=? WHERE id=?", act, g.user["id"])
         return f(*a, **kw)
     return wrapper
 
@@ -87,7 +101,9 @@ def user_json(u):
     return {"username": u["username"], "contact": u["contact"], "contact_type": u["contact_type"],
             "theme": u["theme"], "voice": u["voice"], "lang": u["lang"], "plan": u["plan"],
             "plan_period": u["plan_period"], "plan_renews": u["plan_renews"], "created": u["created"][:10],
-            "card": ranked.card(u), "country": u["country"], "credits": u["credits"],
+            "card": ranked.card(u), "country": u["country"], "credits": u["credits"], "shields": u["shields"], "share_answers": bool(u["share_answers"]),
+            "display_name": u["display_name"], "learn_lang": u["learn_lang"], "learn_langs": plans.learn_langs(u),
+            "lang_cap": plans.plan_of(u)["langs"], "country_change": ranks.country_change(u),
             "has_password": bool(u["has_password"]), "google": bool(u["google_sub"]), "apple": bool(u["apple_sub"])}
 
 
@@ -155,6 +171,63 @@ def auth_start():
     session["signup_contact"] = contact
     session.pop("signup_verified", None)
     return jsonify({"ok": True, "contact": contact, "dev_code": None if sent else code, "resend_in": CODE_RESEND})
+
+
+def _mask(email):
+    name, _, domain = email.partition("@")
+    return f"{name[:2]}{'*' * max(len(name) - 2, 1)}@{domain}"
+
+
+@app.post("/api/auth/forgot")
+def auth_forgot():
+    """Forgot password: a 6-digit code goes to the account's email. Works with a username or an email."""
+    login = (request.get_json(force=True).get("login") or "").strip()
+    u = db.one("SELECT * FROM users WHERE username=? COLLATE NOCASE OR (contact=? AND contact_type='email')",
+               login, login.lower())
+    if u is None or u["contact_type"] != "email" or "@" not in (u["contact"] or ""):
+        return err("err_no_email_account")
+    key = "reset:" + u["contact"]
+    old = db.one("SELECT sent_at FROM codes WHERE contact=?", key)
+    if old and time.time() - old["sent_at"] < CODE_RESEND:
+        return err("err_wait", n=int(CODE_RESEND - (time.time() - old["sent_at"])) + 1)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.run("INSERT OR REPLACE INTO codes (contact, contact_type, code_hash, expires, attempts, sent_at) "
+           "VALUES (?,?,?,?,0,?)", key, "email", generate_password_hash(code), time.time() + CODE_TTL, time.time())
+    try:
+        sent = mailer.send_code(u["contact"], "email", code, purpose="reset")
+    except Exception as e:
+        print("email failed:", e)
+        sent = False
+    session["reset_uid"] = u["id"]
+    return jsonify({"ok": True, "to": _mask(u["contact"]), "dev_code": None if sent else code, "resend_in": CODE_RESEND})
+
+
+@app.post("/api/auth/reset")
+def auth_reset():
+    uid = session.get("reset_uid")
+    u = db.one("SELECT * FROM users WHERE id=?", uid) if uid else None
+    row = db.one("SELECT * FROM codes WHERE contact=?", "reset:" + u["contact"]) if u else None
+    if row is None:
+        return err("err_session")
+    if time.time() > row["expires"] or row["attempts"] >= CODE_TRIES:
+        return err("err_code_expired")
+    body = request.get_json(force=True)
+    code = re.sub(r"\D", "", body.get("code", ""))
+    if not check_password_hash(row["code_hash"], code):
+        db.run("UPDATE codes SET attempts = attempts + 1 WHERE contact=?", row["contact"])
+        left = CODE_TRIES - row["attempts"] - 1
+        return err("err_code" if left > 0 else "err_code_expired", n=left)
+    pw, pw2 = body.get("password") or "", body.get("password2") or ""
+    if len(pw) < 8:
+        return err("err_password_short")
+    if pw != pw2:
+        return err("err_password_match")
+    db.run("DELETE FROM codes WHERE contact=?", row["contact"])
+    db.run("UPDATE users SET pw_hash=?, has_password=1 WHERE id=?", generate_password_hash(pw), u["id"])
+    session.clear()
+    session.permanent = True
+    session["uid"] = u["id"]                       # signed in right away
+    return jsonify({"ok": True})
 
 
 @app.post("/api/auth/verify")
@@ -284,8 +357,65 @@ def settings():
     for key, values in allowed.items():
         if key in body and body[key] in values:
             db.run(f"UPDATE users SET {key}=? WHERE id=?", body[key], g.user["id"])
-    if "country" in body and re.fullmatch(r"[A-Z]{2}", str(body["country"] or "")):
-        db.run("UPDATE users SET country=? WHERE id=?", body["country"], g.user["id"])
+    if "display_name" in body:
+        name = re.sub(r"\s+", " ", str(body["display_name"] or "")).strip()[:30]
+        db.run("UPDATE users SET display_name=? WHERE id=?", name or None, g.user["id"])
+    langs = plans.learn_langs(g.user)
+    if isinstance(body.get("learn_langs"), list):               # the list chosen in Settings
+        langs = list(dict.fromkeys(x for x in body["learn_langs"] if x in LEARN_LANGS))
+        cap = plans.plan_of(g.user)["langs"]
+        if not langs:
+            return err("lang_need_one")
+        if cap and len(langs) > cap:
+            return err("lang_limit", 402)
+        db.run("UPDATE users SET learn_langs=? WHERE id=?", ",".join(langs), g.user["id"])
+        if g.user["learn_lang"] not in langs:
+            db.run("UPDATE users SET learn_lang=? WHERE id=?", langs[0], g.user["id"])
+    if body.get("learn_lang") in LEARN_LANGS:                   # the language practised now
+        new = body["learn_lang"]
+        if new not in langs:
+            cap = plans.plan_of(g.user)["langs"]
+            if cap and len(langs) >= cap:
+                if len(langs) > 1 or "learn_langs" in body:
+                    return err("lang_limit", 402)
+                langs = []                                      # only one allowed: swap it
+            langs.append(new)
+        db.run("UPDATE users SET learn_lang=?, learn_langs=? WHERE id=?", new, ",".join(dict.fromkeys(langs)), g.user["id"])
+    if "share_answers" in body:
+        db.run("UPDATE users SET share_answers=? WHERE id=?", int(bool(body["share_answers"])), g.user["id"])
+    if "country" in body and re.fullmatch(r"[A-Z]{2}", str(body["country"] or "")) and body["country"] != g.user["country"]:
+        can = ranks.country_change(g.user)
+        if not can["ok"]:
+            return err("country_locked", 403, **{"from": can["from"], "to": can["to"]})
+        db.run("UPDATE users SET country=?, country_changed=? WHERE id=?", body["country"],
+               None if can.get("first") else ranks.season_id(), g.user["id"])
+    return jsonify({"ok": True, "user": user_json(current_user())})
+
+
+def _username_problem(name, me_id=None):
+    """None if the name can be used, else the error key (same rules as sign-up; case does not matter)."""
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", name):
+        return "err_username"
+    row = db.one("SELECT id FROM users WHERE username=? COLLATE NOCASE", name)
+    return "err_username_taken" if row and row["id"] != me_id else None
+
+
+@app.get("/api/username/check")
+@login_required
+def username_check():
+    name = (request.args.get("name") or "").strip()
+    problem = _username_problem(name, g.user["id"])
+    return jsonify({"ok": problem is None, "error": problem})
+
+
+@app.post("/api/username")
+@login_required
+def username_change():
+    name = (request.get_json(force=True).get("username") or "").strip()
+    problem = _username_problem(name, g.user["id"])
+    if problem:
+        return err(problem)
+    db.run("UPDATE users SET username=? WHERE id=?", name, g.user["id"])
     return jsonify({"ok": True, "user": user_json(current_user())})
 
 
@@ -319,6 +449,9 @@ def delete_account():
         for f in worker.VOICE.glob(f"{r['id']}_*.mp3"):
             f.unlink(missing_ok=True)
     db.run("DELETE FROM recordings WHERE user_id=?", g.user["id"])
+    for r in db.all_("SELECT audio_path FROM match_players WHERE user_id=? AND audio_path IS NOT NULL", g.user["id"]):
+        Path(r["audio_path"]).unlink(missing_ok=True)
+    db.run("UPDATE match_players SET audio_path=NULL WHERE user_id=?", g.user["id"])
     (PHOTOS / f"{g.user['id']}.jpg").unlink(missing_ok=True)
     db.run("DELETE FROM users WHERE id=?", g.user["id"])
     session.clear()
@@ -326,6 +459,127 @@ def delete_account():
 
 
 # ------------------------------------------------------------------ plans (test mode: no payment yet)
+
+# ------------------------------------------------------------------ credits shop
+
+@app.get("/api/shop")
+@login_required
+def shop_state():
+    return jsonify(shop.state(g.user))
+
+
+@app.post("/api/shop/buy")
+@login_required
+def shop_buy():
+    body = request.get_json(force=True)
+    try:
+        u = shop.buy(g.user, body.get("item"), body.get("ref"))
+    except shop.ShopError as e:
+        return err(str(e))
+    return jsonify({"ok": True, "user": user_json(u), "shop": shop.state(u), "usage": plans.usage(u, db)})
+
+
+@app.get("/api/cosmetics")
+@login_required
+def cosmetics_state():
+    return jsonify(cosmetics.state(g.user))
+
+
+@app.post("/api/cosmetics/<action>")
+@login_required
+def cosmetics_action(action):
+    body = request.get_json(force=True)
+    try:
+        if action == "buy":
+            u = cosmetics.buy(g.user, body.get("item"))
+        elif action == "wear":
+            u = cosmetics.wear(g.user, body.get("kind"), body.get("item") or "")
+        else:
+            abort(404)
+    except cosmetics.CosmeticError as e:
+        return err(str(e))
+    return jsonify({"ok": True, "user": user_json(u), "cosmetics": cosmetics.state(u)})
+
+
+# ------------------------------------------------------------------ mock IELTS test
+
+@app.get("/api/mock")
+@login_required
+def mock_start():
+    if (g.user["learn_lang"] or "en") not in mock.BY_LANG:
+        return jsonify({"lang_soon": True, "learn_lang": g.user["learn_lang"]})
+    return jsonify({"limits": mock.limits(g.user), "test": mock.public(mock.pick(g.user))})
+
+
+@app.get("/api/mock/voice/<set_id>/<part>/<int:i>")
+@login_required
+def mock_voice(set_id, part, i):
+    """The examiner reads the question (British voice, made once and kept)."""
+    s = mock.BY_ID.get(set_id)
+    if s is None or part not in ("p1", "p2", "p3"):
+        abort(404)
+    ko = mock.lang_of_set(s) == "ko"
+    if part == "p2":
+        text = (s["p2"]["title"] + " 다음 내용을 말하세요. " + ", ".join(s["p2"]["points"]) + "." if ko
+                else s["p2"]["title"] + " You should say: " + ", ".join(s["p2"]["points"]) + ".")
+    elif 0 <= i < len(s[part]):
+        text = s[part][i]
+    else:
+        abort(404)
+    gender = "male" if g.user["voice"] == "male" else "female"
+    out = worker.VOICE / "mock" / f"{set_id}_{part}_{i}_{gender}.mp3"
+    if not out.exists():
+        from coach import feedback
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            voices = {"en": ("en-GB-RyanNeural", "en-GB-SoniaNeural"), "ko": ("ko-KR-InJoonNeural", "ko-KR-SunHiNeural")}
+            male, female = voices[mock.lang_of_set(s)]
+            feedback.speak(text, out, male if gender == "male" else female)
+        except Exception as e:
+            out.unlink(missing_ok=True)
+            print("voice failed:", e)
+            return err("voice_failed", 503)
+    return send_file(out, mimetype="audio/mpeg")
+
+
+@app.post("/api/mock")
+@login_required
+def mock_submit():
+    s = mock.BY_ID.get(request.form.get("set"))
+    files = [request.files.get(f"part{n}") for n in (1, 2, 3)]
+    if s is None or any(f is None for f in files):
+        abort(400)
+    if mock.limits(g.user)["left"] <= 0:
+        return err("mock_limit", 402)
+    from server import media
+    rec_id = uuid.uuid4().hex[:16]
+    worker.UPLOADS.mkdir(parents=True, exist_ok=True)
+    parts = []
+    try:
+        for n, f in enumerate(files, 1):
+            ext = Path(f.filename or "").suffix.lower() or ".webm"
+            if ext not in MEDIA_EXT:
+                return err("bad_file")
+            p = worker.UPLOADS / f"{rec_id}_p{n}{ext}"
+            f.save(p)
+            parts.append(p)
+        lengths = [media.duration(p) for p in parts]
+        if lengths[1] < mock.PART2_TALK[0] - 1.5 or sum(lengths) < 120:
+            return err("mock_too_short")
+        src = worker.UPLOADS / f"{rec_id}.ogg"
+        length = media.join_audio(parts, src, mock.MAX_TOTAL)
+    except Exception:
+        return err("bad_file")
+    finally:
+        for p in parts:
+            p.unlink(missing_ok=True)
+    db.run("INSERT INTO recordings (id, user_id, mode, sections, question, is_daily, used_bonus, status, created, "
+           "day, duration, trimmed, src_path, is_mock, mock_set, learn_lang) VALUES (?,?,'audio',?,?,0,0,'queued',?,?,?,0,?,1,?,?)",
+           rec_id, g.user["id"], ",".join(SECTIONS), s["p2"]["title"], now_iso(), plans.today(),
+           min(length, mock.MAX_TOTAL), str(src), s["id"], mock.lang_of_set(s))
+    worker.submit(rec_id)
+    return jsonify({"ok": True, "id": rec_id})
+
 
 @app.get("/api/plans")
 def plan_list():
@@ -344,6 +598,8 @@ def plan_choose():
     else:
         renews = (date.today() + timedelta(days=365 if period == "yearly" else 30)).isoformat()
         db.run("UPDATE users SET plan=?, plan_period=?, plan_renews=? WHERE id=?", plan, period, renews, g.user["id"])
+    if plan != "free":
+        shop.join_bonus(db.one("SELECT * FROM users WHERE id=?", g.user["id"]))
     u = current_user()
     return jsonify({"ok": True, "user": user_json(u), "usage": plans.usage(u, db)})
 
@@ -355,7 +611,7 @@ def plan_choose():
 def home():
     last = db.one("SELECT id, overall, cefr, ielts, created, status, mode FROM recordings WHERE user_id=? "
                   "AND status='done' ORDER BY created DESC LIMIT 1", g.user["id"])
-    return jsonify({"daily_question": questions.for_day(), "usage": plans.usage(g.user, db),
+    return jsonify({"daily_question": questions.for_day(lang=g.user["learn_lang"] or "en"), "usage": plans.usage(g.user, db),
                     "last": dict(last) if last else None, "calendar": credits.state(g.user)})
 
 
@@ -411,9 +667,9 @@ def new_recording():
     if used_bonus:
         db.run("UPDATE users SET bonus_left = bonus_left - 1 WHERE id=?", u["id"])
     db.run("INSERT INTO recordings (id, user_id, mode, sections, question, is_daily, used_bonus, status, created, "
-           "day, duration, trimmed, src_path) VALUES (?,?,?,?,?,?,?,'queued',?,?,?,?,?)",
-           rec_id, u["id"], mode, ",".join(chosen), questions.for_day() if daily else None, int(daily),
-           used_bonus, now_iso(), plans.today(), min(length, max_s), int(length > max_s + 0.5), str(src))
+           "day, duration, trimmed, src_path, learn_lang) VALUES (?,?,?,?,?,?,?,'queued',?,?,?,?,?,?)",
+           rec_id, u["id"], mode, ",".join(chosen), questions.for_day(lang=u["learn_lang"] or "en") if daily else None, int(daily),
+           used_bonus, now_iso(), plans.today(), min(length, max_s), int(length > max_s + 0.5), str(src), u["learn_lang"])
     worker.submit(rec_id)
     return jsonify({"ok": True, "id": rec_id})
 
@@ -442,11 +698,31 @@ def result_view(r, lang):
     d, chosen = json.loads(r["data"]), r["sections"].split(",")
     res = worker.summary(d, chosen)
     lv = res["level"]
+    if d.get("lang", "en") != "en":                # Korean (and later others): only the parts built so far
+        f = d["fluency"]
+        return {**base, "learn_lang": d["lang"], "is_mock": bool(r["is_mock"]), "chosen": [s for s in chosen if s in lv["available"]] or ["fluency"],
+                "coming": lv["coming"], "overall": res["overall"], "scores": {k: (v or 0) for k, v in res["sections"].items()},
+                "level": {k: lv[k] for k in ("exam", "topik", "cefr", "too_short")},
+                "fluency": {"sps": f["syllables_per_sec"], "pauses": f["pause_percent"], "mlr": f["mlr"],
+                            "fillers": f["fillers"], "repairs": f["repairs"]},
+                "grammar": {"accuracy": lv["ko"]["accuracy"], "range": lv["ko"]["range"], "per100": lv["ko"]["per100"],
+                            "clean": round(lv["ko"]["clean"] * 100), "complex": lv["grammar_range"]["complex_percent"],
+                            "sentences": [{"original": s["original"], "corrected": s["corrected"],
+                                           "mistakes": [{"wrong": m["wrong"], "right": m["right"],
+                                                         "category": feedback.category_name(lang, m["category"])}
+                                                        for m in s["mistakes"]]}
+                                          for s in d["grammar_results"] if s["mistakes"]]},
+                "vocabulary": {"b1": lv["vocabulary"]["b1_plus"], "b2": lv["vocabulary"]["b2_plus"],
+                               "variety": lv["vocabulary"]["variety"],
+                               "words": (lv["vocabulary"]["advanced_words"] + lv["vocabulary"]["b1_words"])[:12]},
+                "feedback": "", "transcript": d["text"], "camera": None, "repetition": None,
+                "audio": bool(r["audio_path"]) and not r["audio_deleted"], "audio_deleted": bool(r["audio_deleted"]),
+                "keep": plans.KEEP_AUDIOS, "keep_forever": bool(r["keep_forever"]), "is_mock": False,
+                "integrity": res.get("integrity"), "profanity": False, "off_topic": False, "topic": None}
     acc, per100, clean = grammar.grammar_score(d["grammar_results"], d["n_words"])
     g_total, range_score = level.grammar_total(acc, lv["grammar_range"])
     cap, _ = level.repetition_cap(lv["originality"])
     f, p, cam = d["fluency"], d["pronunciation"], (d.get("delivery") or {}).get("stats")
-    keep = plans.plan_of(g.user)["keep_days"]
     return {
         **base, "chosen": chosen, "overall": res["overall"], "scores": res["sections"],
         "level": {k: lv[k] for k in ("cefr", "ielts", "ielts_parts", "toefl", "toefl_old", "too_short")},
@@ -472,7 +748,8 @@ def result_view(r, lang):
         "feedback": feedback.feedback_text(d, res, chosen, lang),
         "transcript": d["text"],
         "audio": bool(r["audio_path"]) and not r["audio_deleted"],
-        "audio_deleted": bool(r["audio_deleted"]), "keep_days": keep,
+        "audio_deleted": bool(r["audio_deleted"]), "keep": plans.KEEP_AUDIOS,
+        "keep_forever": bool(r["keep_forever"]), "is_mock": bool(r["is_mock"]), "off_topic": bool(res.get("off_topic")), "topic": res.get("topic_verdict"), "profanity": bool(d.get("profanity")), "integrity": res.get("integrity"),
     }
 
 
@@ -489,6 +766,24 @@ def recording_audio(rec_id):
     if not r["audio_path"] or r["audio_deleted"] or not Path(r["audio_path"]).exists():
         abort(404)
     return send_file(r["audio_path"], mimetype="audio/ogg")
+
+
+@app.get("/api/ranked/match/<match_id>/audio")
+@login_required
+def ranked_audio(match_id):
+    """A ranked answer: your own, or your opponent's if they turned on "Let opponents hear my answer"."""
+    mine = db.one("SELECT slot FROM match_players WHERE match_id=? AND user_id=? AND is_ghost=0", match_id, g.user["id"])
+    if mine is None:
+        abort(404)
+    slot = request.args.get("slot", type=int)
+    if slot is None or slot == mine["slot"]:
+        p = db.one("SELECT audio_path FROM match_players WHERE match_id=? AND slot=?", match_id, mine["slot"])
+    else:
+        p = db.one("SELECT p.audio_path FROM match_players p JOIN users u ON u.id=p.user_id WHERE p.match_id=? AND p.slot=? "
+                   "AND p.is_ghost=0 AND u.share_answers=1", match_id, slot)
+    if p is None or not p["audio_path"] or not Path(p["audio_path"]).exists():
+        abort(404)
+    return send_file(p["audio_path"], mimetype="audio/ogg")
 
 
 @app.get("/api/recordings/<rec_id>/voice")
@@ -521,12 +816,12 @@ def progress():
     u = g.user
     full = u["plan"] != "free"
     since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    rows = db.all_("SELECT id, created, mode, overall, cefr, ielts, scores, status, is_daily, question, sections "
+    rows = db.all_("SELECT id, created, mode, overall, cefr, ielts, scores, status, is_daily, is_mock, question, sections, learn_lang "
                    "FROM recordings WHERE user_id=? AND status!='failed' " + ("" if full else "AND created >= ? ") +
                    "ORDER BY created DESC", *((u["id"],) if full else (u["id"], since)))
     history = [{"id": r["id"], "created": r["created"], "mode": r["mode"], "overall": r["overall"],
-                "cefr": r["cefr"], "status": r["status"], "is_daily": bool(r["is_daily"]),
-                "question": r["question"]} for r in rows]
+                "cefr": r["cefr"], "status": r["status"], "is_daily": bool(r["is_daily"]), "is_mock": bool(r["is_mock"]),
+                "learn_lang": r["learn_lang"] or "en", "question": r["question"]} for r in rows]
     done = [r for r in reversed(rows) if r["status"] == "done"]
     trend = [{"date": r["created"][:10], "overall": r["overall"], "scores": json.loads(r["scores"] or "{}"),
               "chosen": r["sections"].split(",")} for r in done]
@@ -589,6 +884,20 @@ def ranked_match(match_id):
     if v is None:
         abort(404)
     return jsonify(v)
+
+
+@app.post("/api/ranked/match/<match_id>/emote")
+@login_required
+def ranked_emote(match_id):
+    problem = ranked.send_emote(g.user, match_id, (request.get_json(force=True).get("sticker") or ""))
+    return err(problem) if problem else jsonify({"ok": True})
+
+
+@app.post("/api/ranked/match/<match_id>/report")
+@login_required
+def ranked_report(match_id):
+    problem = ranked.report(g.user, match_id)
+    return err(problem) if problem else jsonify({"ok": True})
 
 
 @app.post("/api/ranked/match/<match_id>/answer")
@@ -678,7 +987,11 @@ def profile_look():
 def profile_stats():
     u = ranked.ensure_season(g.user)
     season = None if request.args.get("season") == "all" else u["season"]
-    return jsonify({"stats": rewards.stats(u["id"], season), "season": u["season"]})
+    stats = rewards.stats(u["id"], season)
+    if season is None:          # All seasons: current rank next to the highest rank ever reached
+        stats["cur_rank"] = ranked.card(u)["rank"]
+        stats["max_rank"] = ranks.rank_of(max(u["best_rp"], u["rp"]))      # u is rated (ranked.ensure_season)
+    return jsonify({"stats": stats, "season": u["season"]})
 
 
 @app.get("/api/profile/awards")

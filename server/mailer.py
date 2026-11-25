@@ -15,19 +15,20 @@ def email_configured():
     return all(os.environ.get(k) for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"))
 
 
-def send_code(contact, contact_type, code):
+def send_code(contact, contact_type, code, purpose="signup"):
     """Returns True if really sent; False = test mode (show the code on the page)."""
     if contact_type == "email" and email_configured():
         msg = EmailMessage()
-        msg["Subject"] = f"Your Speakoff code: {code}"
+        msg["Subject"] = f"Your Speakoff code: {code}" if purpose == "signup" else f"Reset your Speakoff password: {code}"
         msg["From"] = os.environ.get("SMTP_FROM", os.environ["SMTP_USER"])
         msg["To"] = contact
-        msg.set_content(f"Your Speakoff sign-up code is {code}.\nIt is valid for 10 minutes.\n\n"
+        what = "sign-up code" if purpose == "signup" else "code to reset your password"
+        msg.set_content(f"Your Speakoff {what} is {code}.\nIt is valid for 10 minutes.\n\n"
                         f"If you did not ask for it, you can ignore this email.")
         with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ.get("SMTP_PORT", 587)), timeout=20) as s:
             s.starttls()
             s.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
             s.send_message(msg)
         return True
-    print(f"[TEST MODE] sign-up code for {contact}: {code}", flush=True)
+    print(f"[TEST MODE] {purpose} code for {contact}: {code}", flush=True)
     return False

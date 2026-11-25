@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from server import db
-from server.plans import PLANS
+from server.plans import KEEP_AUDIOS, PLANS
 
 AUDIO = db.DATA / "audio"
 VOICE = db.DATA / "voice"
@@ -38,7 +38,76 @@ def summary(d, sections):
     """Scores, level and the report's numbers for one analysis (fast: the models already ran)."""
     from coach import rate
     with contextlib.redirect_stdout(io.StringIO()):
-        return rate.report("recording", d, sections)
+        res = rate.report("recording", d, sections)
+    t = d.get("topic") or {}
+    res["topic_verdict"] = t.get("verdict")
+    res["integrity"] = (d.get("integrity") or {}).get("verdict")
+    if res["integrity"] == "cheat":
+        from coach import topic
+        res["overall"] = min(res["overall"], topic.OFF_CAP)
+    if t.get("off"):          # off-topic or memorised answer: overall capped (coach/topic.py)
+        from coach import topic
+        res["overall"] = min(res["overall"], topic.OFF_CAP)
+        res["off_topic"] = True
+    return res
+
+
+def topic_question(rec):
+    """The question an answer should be about: the daily question, or every question of a mock test."""
+    if rec["is_mock"]:
+        from server import mock
+        s = mock.BY_ID.get(rec["mock_set"])
+        if s:
+            return " ".join(s["p1"] + [s["p2"]["title"]] + s["p2"]["points"] + s["p3"])
+    return rec["question"]
+
+
+def check_integrity(d, audio_path, uid, sections):
+    """Anti-cheat (coach/anticheat.py): run after scoring; returns the (maybe capped) scores."""
+    res = summary(d, sections)
+    if not uid:
+        return res
+    try:
+        from coach import anticheat
+        prints = [json.loads(r["emb"]) for r in db.all_("SELECT emb FROM voice_prints WHERE user_id=? ORDER BY created DESC LIMIT ?",
+                                                         uid, anticheat.MAX_PRINTS)]
+        scores = [r["overall"] for r in db.all_("SELECT overall FROM recordings WHERE user_id=? AND status='done' "
+                                                "ORDER BY created DESC LIMIT 10", uid)]
+        scores += [r["overall"] for r in db.all_("SELECT p.overall FROM match_players p JOIN matches m ON m.id=p.match_id "
+                                                 "WHERE p.user_id=? AND p.is_ghost=0 AND p.overall IS NOT NULL "
+                                                 "ORDER BY m.created DESC LIMIT 10", uid)]
+        out, vp = anticheat.check(d, audio_path, res["overall"], prints[::-1], scores)
+        d["integrity"] = out
+        if vp and out["verdict"] != "cheat":          # only honest answers teach us the player's voice
+            db.run("INSERT INTO voice_prints (user_id, created, emb) VALUES (?,?,?)", uid, time.time(), json.dumps(vp))
+        return summary(d, sections)
+    except Exception:
+        traceback.print_exc()                       # never block scoring because of this check
+        return res
+
+
+def earlier_answers(uid, question, n=40):
+    """The player's recent answers to other questions (for spotting a memorised speech)."""
+    out = []
+    for r in db.all_("SELECT data, question FROM recordings WHERE user_id=? AND status='done' AND data IS NOT NULL "
+                     "ORDER BY created DESC LIMIT ?", uid, n):
+        if r["question"] != question:
+            out.append((json.loads(r["data"]) or {}).get("text", ""))
+    for r in db.all_("SELECT p.extras, m.question FROM match_players p JOIN matches m ON m.id=p.match_id "
+                     "WHERE p.user_id=? AND p.is_ghost=0 AND p.extras IS NOT NULL ORDER BY m.created DESC LIMIT ?", uid, n):
+        if r["question"] != question:
+            out.append((json.loads(r["extras"]) or {}).get("text", ""))
+    return [t for t in out if t]
+
+
+def check_topic(d, question, uid=None):
+    if d.get("lang", "en") != "en":                # the off-topic models are English-only so far
+        return
+    try:
+        from coach import topic
+        d["topic"] = topic.check(question, d.get("text", ""), earlier_answers(uid, question) if uid else ())
+    except Exception:
+        traceback.print_exc()                   # never block scoring because of this check
 
 
 def _analyse(rec_id):
@@ -50,21 +119,29 @@ def _analyse(rec_id):
     try:
         from coach import rate
         from server import media
-        max_s = PLANS[rec["plan"]]["max_s"] if not rec["is_daily"] else 70
+        from server import mock
+        max_s = mock.MAX_TOTAL if rec["is_mock"] else PLANS[rec["plan"]]["max_s"] if not rec["is_daily"] else 70
         AUDIO.mkdir(parents=True, exist_ok=True)
         audio = AUDIO / f"{rec_id}.ogg"
         media.to_audio(src, audio, max_s)
         video = src if rec["mode"] == "video" and media.has_video(src) else None
-        d = rate.analyse(audio, video=video, cache=False, max_seconds=max_s)
+        d = rate.analyse(audio, video=video, cache=False, max_seconds=max_s, lang=rec["learn_lang"] or "en")
         if d["n_words"] < MIN_WORDS:
             # silence, music or another language: Whisper may "hear" a few made-up words, and with almost no
             # words there are no mistakes, so the scores would be wrongly high -> refuse it instead
             raise NotEnoughSpeech(d["n_words"])
         sections = rec["sections"].split(",")
-        res = summary(d, sections)
+        from coach import profanity
+        if profanity.find(d.get("text", "")):
+            from server import ranked
+            ranked.strike(rec["user_id"])
+            d["profanity"] = True                        # recordings: a warning on the result, no score change
+        check_topic(d, topic_question(rec), rec["user_id"])
+        res = check_integrity(d, audio, rec["user_id"], sections)
         db.run("UPDATE recordings SET status='done', data=?, audio_path=?, overall=?, cefr=?, ielts=?, scores=? "
                "WHERE id=?", json.dumps(d, ensure_ascii=False), str(audio), res["overall"],
                res["level"]["cefr"], res["level"]["ielts"], json.dumps(res["sections"]), rec_id)
+        trim_audios(rec["user_id"])
         try:
             from server import rewards
             rewards.evaluate(rec["user_id"])                    # achievements for recordings / levels
@@ -97,18 +174,29 @@ def _loop():
             traceback.print_exc()
 
 
-def cleanup():
-    """Delete recording files older than the user's plan allows; keep the results."""
-    now = datetime.now(timezone.utc)
-    rows = db.all_("SELECT r.id, r.created, r.audio_path, u.plan FROM recordings r JOIN users u ON u.id=r.user_id "
-                   "WHERE r.audio_deleted=0 AND r.audio_path IS NOT NULL")
-    for r in rows:
-        keep = PLANS.get(r["plan"], PLANS["free"])["keep_days"]
-        if now - datetime.fromisoformat(r["created"]) > timedelta(days=keep):
-            Path(r["audio_path"]).unlink(missing_ok=True)
-            for f in VOICE.glob(f"{r['id']}_*.mp3"):
+def trim_audios(user_id):
+    """Keep the audio of the user's newest KEEP_AUDIOS recordings (normal and ranked together); results stay."""
+    rows = [("rec", r["id"], datetime.fromisoformat(r["created"]).timestamp(), r["audio_path"])
+            for r in db.all_("SELECT id, created, audio_path FROM recordings WHERE user_id=? AND audio_deleted=0 "
+                             "AND audio_path IS NOT NULL AND keep_forever=0", user_id)]
+    rows += [("match", (r["match_id"], r["slot"]), r["created"], r["audio_path"])
+             for r in db.all_("SELECT p.match_id, p.slot, p.audio_path, m.created FROM match_players p "
+                              "JOIN matches m ON m.id=p.match_id WHERE p.user_id=? AND p.is_ghost=0 "
+                              "AND p.audio_path IS NOT NULL", user_id)]
+    rows.sort(key=lambda r: r[2], reverse=True)
+    for kind, key, _, path in rows[KEEP_AUDIOS:]:
+        Path(path).unlink(missing_ok=True)
+        if kind == "rec":
+            for f in VOICE.glob(f"{key}_*.mp3"):
                 f.unlink(missing_ok=True)
-            db.run("UPDATE recordings SET audio_deleted=1 WHERE id=?", r["id"])
+            db.run("UPDATE recordings SET audio_deleted=1 WHERE id=?", key)
+        else:
+            db.run("UPDATE match_players SET audio_path=NULL WHERE match_id=? AND slot=?", *key)
+
+
+def cleanup():
+    for u in db.all_("SELECT id FROM users"):
+        trim_audios(u["id"])
     for f in UPLOADS.glob("*"):                                 # uploads left behind by a crash
         if time.time() - f.stat().st_mtime > 24 * 3600:
             f.unlink(missing_ok=True)

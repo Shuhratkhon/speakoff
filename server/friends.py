@@ -30,9 +30,28 @@ def relation(me, other):
     return None
 
 
+def shown_status(u):
+    """What friends see: None (offline), "online", "match", "mock", "record" or "queue"."""
+    if not (u["last_seen"] and time.time() - u["last_seen"] < ONLINE_S):
+        return None
+    if ranked.active_match(u["id"]):
+        return "match"
+    if db.one("SELECT 1 FROM ranked_queue WHERE user_id=? AND match_id IS NULL", u["id"]):
+        return "queue"
+    act = u["activity"] or "online"
+    return act if act in ("mock", "record") else "online"
+
+
 def _card(u):
     c = ranked.card(ranked.ensure_season(u))
     c["online"] = bool(u["last_seen"] and time.time() - u["last_seen"] < ONLINE_S)
+    if c["online"]:
+        if ranked.active_match(u["id"]):
+            c["activity"] = "match"
+        elif db.one("SELECT 1 FROM ranked_queue WHERE user_id=? AND match_id IS NULL", u["id"]):
+            c["activity"] = "queue"
+        else:
+            c["activity"] = u["activity"] or "online"
     return c
 
 
@@ -109,6 +128,8 @@ def challenge(me_user, username):
     other = _uid(username)
     if other is None or relation(me, other) != "friend":
         return None, "user_not_found"
+    if shown_status(db.one("SELECT * FROM users WHERE id=?", other)) != "online":
+        return None, "friend_not_free"            # only a friend shown as "● Online" can be challenged
     if ranked.limits(me_user)["left"] <= 0:
         return None, "no_matches_left"
     db.run("UPDATE challenges SET status='cancelled' WHERE from_id=? AND status='pending'", me)
@@ -143,8 +164,9 @@ def answer_challenge(me_user, cid, accept):
         return None, "no_matches_left"
     with ranked.LOCK:
         a = db.one("SELECT * FROM users WHERE id=?", c["from_id"])
-        mid = ranked._create("friendly", ranked._question([a["id"], me]), [
-            {"user_id": a["id"], "rp_before": a["rp"]}, {"user_id": me, "rp_before": me_user["rp"]}])
+        mid = ranked._create("friendly", ranked._question([a["id"], me], ranked.lang_of(a)), [
+            {"user_id": a["id"], "rp_before": ranked.rated(a)["rp"]}, {"user_id": me, "rp_before": ranked.rated(me_user)["rp"]}],
+        ranked.lang_of(a))
         db.run("UPDATE challenges SET status='accepted', match_id=? WHERE id=?", mid, cid)
     return mid, None
 

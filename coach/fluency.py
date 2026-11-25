@@ -18,17 +18,19 @@ from coach.transcribe import transcribe
 SAMPLE_RATE = 16000    # decode_audio gives 16000 samples per second
 MIN_PAUSE = 0.5        # silences shorter than this are normal breathing, not pauses
 LONG_PAUSE = 2.0       # pauses this long are flagged on their own
-FILLERS = {"um", "umm", "uh", "uhh", "er", "erm", "ah", "hmm", "mm"}
+FILLERS = {"um", "umm", "uh", "uhh", "er", "erm", "ah", "hmm", "mm",
+           "음", "음음", "어", "어어", "으", "으음", "아", "에", "엄", "흠"}          # Korean fillers (2026-11-26)
 # words that usually START a new clause, so a pause before them sounds natural
 CLAUSE_STARTERS = {"and", "but", "so", "because", "then", "or", "i", "we", "it",
-                   "this", "that", "now", "also", "after", "when", "if"}
+                   "this", "that", "now", "also", "after", "when", "if",
+                   "그리고", "그런데", "근데", "그래서", "하지만", "그러니까", "그러면", "그럼", "그래도", "왜냐하면", "그리고요", "또"}
 
 
 # ---------------------------------------------------------------- helpers
 
 def clean(word):
     """Lowercase and remove punctuation: 'Coach.' -> 'coach'."""
-    return re.sub(r"[^a-z0-9']", "", word.lower())
+    return re.sub(r"[^a-z0-9'\uac00-\ud7a3]", "", word.lower())        # keeps Hangul syllables
 
 
 def count_syllables(word):
@@ -36,6 +38,9 @@ def count_syllables(word):
     word = clean(word)
     if not word:
         return 0
+    hangul = len(re.findall(r"[\uac00-\ud7a3]", word))
+    if hangul:                              # Korean: every Hangul block is one syllable
+        return hangul
     if word.isdigit():                      # "100" is said "one hundred"
         return 3
     groups = re.findall(r"[aeiouy]+", word)
@@ -230,17 +235,23 @@ def scale(value, bad, good):
     return min(max(t, 0.0), 1.0)
 
 
-def fluency_score(s):
+# Korean: syllables are short (native ~5-7 a second) and a "word" (eojeol) carries endings, so runs have fewer
+# words. PROVISIONAL until tuned on real Korean learner recordings.
+SPEED = {"en": (2.0, 3.5), "ko": (2.5, 5.0)}
+RUNS = {"en": (3, 10), "ko": (2, 7)}
+
+
+def fluency_score(s, lang="en"):
     """PROVISIONAL: thresholds come from speech research ranges and must be tuned in part 2g
     against human fluency ratings (speechocean762)."""
     minutes = max(s["duration"] / 60, 0.1)
     parts = {
-        # speed: under ~2 syllables/s is slow, ~3.5+ is fluent
-        "speed":       (25, scale(s["syllables_per_sec"], 2.0, 3.5)),
+        # speed: under ~2 syllables/s is slow, ~3.5+ is fluent (English)
+        "speed":       (25, scale(s["syllables_per_sec"], *SPEED.get(lang, SPEED["en"]))),
         # pauses: 40% of the time silent is bad, 20% or less is natural
         "pauses":      (20, scale(s["pause_percent"], 40, 20)),
-        # mean length of run: 3 words is choppy, 10+ is fluent
-        "runs":        (20, scale(s["mlr"], 3, 10)),
+        # mean length of run: 3 words is choppy, 10+ is fluent (English)
+        "runs":        (20, scale(s["mlr"], *RUNS.get(lang, RUNS["en"]))),
         # mid-phrase + long pauses per minute
         "hesitations": (15, scale((s["mid_phrase_pauses"] + 2 * s["long_pauses"]) / minutes, 8, 1)),
         # fillers per minute
