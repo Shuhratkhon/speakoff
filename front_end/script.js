@@ -175,7 +175,7 @@ document.addEventListener("click", (e) => {
 const ROUTES = {
   welcome: viewWelcome, signup: viewSignup, verify: viewVerify, create: viewCreate, signin: viewSignin, forgot: viewForgot,
   home: viewHome, progress: viewProgress, record: viewRecord, ranked: viewRanked, profile: viewProfile,
-  result: viewResult, plans: viewPlans, match: viewMatch, u: viewUser, friends: viewFriends, challenge: viewChallenge, leaderboard: viewLeaderboard, shop: viewShop, mock: viewMock, setup: viewSetup,
+  result: viewResult, plans: viewPlans, match: viewMatch, u: viewUser, friends: viewFriends, challenge: viewChallenge, leaderboard: viewLeaderboard, shop: viewShop, mock: viewMock, setup: viewSetup, privacy: viewPrivacy,
 };
 const PUBLIC = new Set(["welcome", "signup", "verify", "create", "signin", "forgot"]);
 let leaveHooks = [];
@@ -186,6 +186,7 @@ async function route() {
   const view = ROUTES[name] ? name : "home";
   if (!PUBLIC.has(view) && !S.me) return go("#/welcome");
   if (PUBLIC.has(view) && S.me) return go("#/home");
+  if (S.me && !S.me.privacy_ok && view !== "privacy") { S.next = location.hash; return go("#/privacy"); }
   const authScreen = PUBLIC.has(view);
   tabbar.hidden = authScreen;
   app.className = authScreen ? "auth" : "";
@@ -1023,7 +1024,7 @@ async function viewProgress() {
 // ------------------------------------------------------------------ ranks, avatars, frames
 const RANK_COLOR = Object.fromEntries(RANKS);
 const ROMAN = ["", "I", "II", "III"];
-function rankLabel(r) { return r ? `${t("rank_" + r.rank)}${r.div ? " " + ROMAN[r.div] : r.wins != null ? " " + r.wins : ""}` : ""; }
+function rankLabel(r) { return r ? `${t("rank_" + r.rank)}${r.div ? " " + ROMAN[r.div] : r.rank === "master" && r.rp ? " " + r.rp : ""}` : ""; }
 function shade(hex, amt) {
   // amt > 0 mixes with white, amt < 0 with black
   const n = parseInt(hex.slice(1), 16), to = amt > 0 ? 255 : 0, a = Math.abs(amt);
@@ -1129,7 +1130,7 @@ function emBanner(id, c, text) {
 function emblem(r, size = 52, bare = false) {
   const rank = r.rank, c = RANK_COLOR[rank], lvl = RANKS.findIndex((x) => x[0] === rank);
   const id = `em${++embN}`, small = size < 30;
-  const text = r.div ? ROMAN[r.div] : r.wins ? String(r.wins) : "★";
+  const text = r.div ? ROMAN[r.div] : r.rank === "master" && r.rp ? String(r.rp) : "★";
   const rimDk = shade(lvl >= 3 ? EM_GOLD : c, -.7);
   const studs = lvl >= 1 ? Array.from({ length: 6 }, (_, i) => { const a = emRad(-90 + i * 60);
     return `<circle cx="${(60 + 41 * Math.cos(a)).toFixed(1)}" cy="${(54 + 41 * Math.sin(a)).toFixed(1)}" r="2.4" fill="url(#${id}r)" stroke="${shade(c, -.7)}" stroke-width=".6"/>`; }).join("") : "";
@@ -1210,9 +1211,9 @@ async function viewRanked() {
         : lim.left > 0 ? `<a class="btn block big" href="#/match/search">${icon("trophy")} ${esc(t("find_match"))}</a>`
         : `<div class="card center stack"><h3>${esc(t("no_matches_left"))}</h3><p class="muted small">${esc(t("no_matches_left_sub"))}</p>
             ${S.me.plan !== "pro" ? `<a class="btn small" href="#/plans">${icon("spark")} ${esc(t("upgrade"))}</a>` : ""}</div>`}
-      <p class="muted center small">${esc(t("matches_left", { n: lim.left, total: lim.per_day }))}</p>
+      <p class="muted center small">${esc(t(lim.unlimited ? "matches_left_fair" : "matches_left", { n: lim.left, total: lim.per_day }))}</p>
       <details class="acc"><summary>${esc(t("how_it_works"))}</summary><div class="acc-body">
-        <ol class="rules">${[1, 2, 3, 4, 5].map((i) => `<li>${esc(t("rule_" + i))}</li>`).join("")}<li>${esc(t("ranked_limits"))}</li></ol></div></details>
+        <ol class="rules">${[1, 2, 3, 4, 5, 6, 7, 8].map((i) => `<li>${esc(t("rule_" + i))}</li>`).join("")}<li>${esc(t("ranked_limits"))}</li></ol></div></details>
       <div class="card"><div class="card-title">${esc(t("recent_matches"))}</div>
         ${d.history.length ? d.history.map((h) => `
           <div class="hist" onclick="location.hash='#/match/${h.id}'">
@@ -1263,10 +1264,15 @@ async function viewLeaderboard() {
     <h1 style="margin-bottom:16px">${esc(t("leaderboard"))}</h1>
     <div class="stack">
       <div class="seg" id="lbSeg"><button data-v="national" class="${lbScope === "national" ? "on" : ""}">${d.country ? flag(d.country) : "🏳️"} ${esc(d.country ? countryName(d.country) : t("lb_national"))}</button>
+        <button data-v="friends" class="${lbScope === "friends" ? "on" : ""}">👥 ${esc(t("lb_friends"))}</button>
         <button data-v="global" class="${lbScope === "global" ? "on" : ""}">🌍 ${esc(t("lb_global"))}</button></div>
       ${meRow ? `<div class="card"><div class="card-title">${esc(t("your_place"))}</div>${meRow}</div>` : ""}
       <div class="card">
         ${lbScope === "national" && !d.country ? `<p class="empty"><a href="#/profile">${esc(t("set_country"))}</a></p>`
+          : d.locked ? `<div class="empty stack"><b>${esc(t("lb_national_locked", { n: d.need }))}</b>
+              <div class="bar" style="margin:10px auto 0;max-width:240px"><i style="width:${Math.round(100 * d.count / d.need)}%"></i></div>
+              <span class="muted small">${esc(t("lb_national_count", { n: d.count, need: d.need }))}</span></div>`
+          : lbScope === "friends" && !d.friends ? `<p class="empty"><a href="#/friends">${esc(t("lb_add_friends"))}</a></p>`
           : d.board.length ? d.board.map((b, i) => `
           <a class="board-row ${b.me ? "me" : ""}" href="#/u/${encodeURIComponent(b.username)}">
             <span class="pos ${i < 3 ? "top" + (i + 1) : ""}">${i + 1}</span>${avatarHtml(b, 40)}
@@ -1666,6 +1672,7 @@ function statsBlock(s) {
 }
 
 // ------------------------------------------------------------------ public profile
+let uTab = "stats";
 async function viewUser(name) {
   render(`<div class="splash"><div class="spinner"></div></div>`);
   const d = await api(`/api/users/${encodeURIComponent(decodeURIComponent(name || ""))}`);
@@ -1683,11 +1690,37 @@ async function viewUser(name) {
           <div class="skills-row">${skillChips(c.skills)}</div></div>
       </div>
       ${d.me ? "" : `<div class="row" id="relBtns">${relationButtons(c.username, d.relation)}</div>`}
-      <div class="grid2"><div class="stat"><b>${d.skills_earned}</b><span>${esc(t("tab_skills"))}</span></div>
-        <div class="stat"><b>${d.achs_earned}</b><span>${esc(t("tab_achievements"))}</span></div></div>
-      <div class="card"><div class="card-title">${esc(t("current_season"))}</div>${statsBlock(d.stats)}</div>
+      <div class="seg" id="uTabs"><button data-t="stats" class="${uTab === "stats" ? "on" : ""}">${esc(t("tab_stats"))}</button>
+        <button data-t="skills" class="${uTab === "skills" ? "on" : ""}">${esc(t("tab_skills"))} · ${d.skills_earned}</button></div>
+      <div id="utab"></div>
     </div>`);
   bindFriendButtons(app, () => viewUser(name));
+  let season = "current", stats = d.stats;
+  const box = $("#utab");
+  const draw = () => {
+    if (uTab === "skills") {
+      box.innerHTML = d.skills.length ? `<div class="awards">${d.skills.map((s) => `
+        <div class="award on r-${s.rarity}"><div class="hexicon r-${s.rarity}">${s.icon}<b class="stack">x${s.count}</b></div>
+          <div class="aw-body"><div class="aw-name">${esc(t("sk_" + s.id))}</div><div class="aw-desc">${esc(t("skd_" + s.id))}</div></div></div>`).join("")}</div>`
+        : `<p class="empty">${esc(t("no_skills_yet"))}</p>`;
+      return;
+    }
+    box.innerHTML = `<div class="card"><div class="seg small-seg" id="uSeason">
+        <button data-v="current" class="${season === "current" ? "on" : ""}">${esc(t("current_season"))}</button>
+        <button data-v="all" class="${season === "all" ? "on" : ""}">${esc(t("all_seasons"))}</button></div>
+      <div style="margin-top:16px">${statsBlock(stats)}</div></div>`;
+    box.querySelectorAll("#uSeason button").forEach((b) => b.onclick = async () => {
+      season = b.dataset.v;
+      const r = await api(`/api/users/${encodeURIComponent(c.username)}?season=${season}`);
+      if (r.stats) { stats = r.stats; draw(); }
+    });
+  };
+  app.querySelectorAll("#uTabs button").forEach((b) => b.onclick = () => {
+    uTab = b.dataset.t;
+    app.querySelectorAll("#uTabs button").forEach((x) => x.classList.toggle("on", x === b));
+    draw();
+  });
+  draw();
 }
 
 // ------------------------------------------------------------------ friends
@@ -2020,8 +2053,11 @@ function settingsHtml() {
             <div class="small" id="unHint"></div></div></form>
         <div class="li"><div><div class="lab">${esc(t("share_answers"))}</div><div class="muted small">${esc(t("share_answers_sub"))}</div></div>
           ${seg("shareSeg", [["on", t("sound_on")], ["off", t("sound_off")]], m.share_answers ? "on" : "off")}</div>
+        <div class="li"><div><div class="lab">${esc(t("voice_setting"))}</div><div class="muted small">${esc(t("voice_setting_sub"))}</div></div>
+          ${seg("voiceCSeg", [["on", t("sound_on")], ["off", t("sound_off")]], m.voice_consent ? "on" : "off")}</div>
         <div class="li" style="flex-wrap:wrap;gap:10px"><div><div class="lab">${esc(t("learning_languages"))}</div>
-            <div class="muted small">${esc(m.lang_cap ? t("langs_of", { n: (m.learn_langs || []).length, cap: m.lang_cap }) : t("langs_all"))}</div></div>
+            <div class="muted small">${esc(m.lang_cap ? t("langs_of", { n: (m.learn_langs || []).length, cap: m.lang_cap }) : t("langs_all"))}</div>
+            ${Object.keys(m.lang_cooling || {}).length ? `<div class="muted small">${esc(t("lang_slot_free", { date: fmtDate(Object.values(m.lang_cooling).sort()[0]) }))}</div>` : ""}</div>
           <div class="learn-chips" id="learnChips">${LEARN.map(([c, f, n, ok]) =>
             `<button class="learn-chip ${(m.learn_langs || []).includes(c) ? "on" : ""}" data-l="${c}" ${ok ? "" : "disabled"}>${f} ${esc(n)}${ok ? "" : ` <span class="soon">${esc(t("soon"))}</span>`}</button>`).join("")}</div></div>
         <div class="li"><div><div class="lab">${esc(t("country"))}</div>${m.country_change && !m.country_change.first ? `<div class="muted small">${esc(m.country_change.ok
@@ -2038,6 +2074,7 @@ function settingsHtml() {
           <button class="btn">${esc(t("save"))}</button>
         </form></div></details>
 
+      <a class="card row between" href="#/privacy" style="color:inherit"><b>${esc(t("privacy_title"))}</b>${icon("back")}</a>
       <div class="stack">
         <button class="btn block outline" id="signOut">${esc(t("sign_out"))}</button>
         <details class="acc"><summary style="color:var(--bad)">${esc(t("delete_account"))}</summary><div class="acc-body stack">
@@ -2079,6 +2116,13 @@ function bindSettings() {
     return res.ok;
   }
   $$("#themeSeg button").forEach((b) => b.onclick = async () => { setTheme(b.dataset.v); if (await save({ theme: b.dataset.v })) toast(t("saved")); viewProfile(); });
+  $$("#voiceCSeg button").forEach((b) => b.onclick = async () => {
+    const on = b.dataset.v === "on";
+    if (on === !!S.me.voice_consent) return;
+    if (!on && !confirm(t("voice_withdraw_confirm"))) return;
+    if (await save({ voice_consent: on })) toast(t(on ? "saved" : "voice_deleted"));
+    viewProfile();
+  });
   $$("#shareSeg button").forEach((b) => b.onclick = async () => { if (await save({ share_answers: b.dataset.v === "on" })) toast(t("saved")); viewProfile(); });
   $$("#learnChips .learn-chip").forEach((b) => b.onclick = async () => {
     const now = S.me.learn_langs || [];
@@ -2136,7 +2180,7 @@ async function viewPlans() {
       const feats = p.id === "free"
         ? [t("feat_welcome"), t("feat_length", { max: mmss(p.max_s) }), t("feat_daily_q"), t("feat_progress_simple"), t("feat_ranked", { n: p.ranked }), t("feat_langs", { n: p.langs }), t("feat_mock_month")]
         : [p.id === "pro" ? t("feat_unlimited") : t("feat_per_day", { n: p.per_day }), t("feat_length", { max: mmss(p.max_s) }), t(period === "yearly" ? "feat_credits" : "feat_credits_once", { n: p.credits_month }),
-           t("feat_daily_q"), t("feat_progress_full"), t("feat_ranked", { n: p.ranked }), p.langs ? t("feat_langs", { n: p.langs }) : t("feat_langs_all"), t(p.id === "pro" ? "feat_mock_day" : "feat_mock_week"), ...(p.id === "pro" ? [t("feat_trial")] : [])];
+           t("feat_daily_q"), t("feat_progress_full"), p.ranked ? t("feat_ranked", { n: p.ranked }) : t("feat_ranked_unlimited"), p.langs ? t("feat_langs", { n: p.langs }) : t("feat_langs_all"), t(p.id === "pro" ? "feat_mock_day" : "feat_mock_week"), ...(p.id === "pro" ? [t("feat_trial")] : [])];
       return `<div class="plan ${p.id === "pro" ? "best" : ""}">
         ${cur === p.id ? `<span class="tag accent badge">${esc(t("current_plan"))}</span>` : period === "yearly" && p.price_m ? `<span class="tag accent badge">${esc(t("bonus_months", { n: 2 }))}</span>` : ""}
         <h2>${esc(planName(p.id))}</h2>
@@ -2185,6 +2229,55 @@ function bindLangSwitch(after) {
 }
 const LEARN = [["en", "🇬🇧", "English", true], ["ko", "🇰🇷", "한국어", true], ["es", "🇪🇸", "Español", false],
   ["de", "🇩🇪", "Deutsch", false], ["ja", "🇯🇵", "日本語", false]];
+async function viewPrivacy() {
+  const agree = !S.me.privacy_ok;
+  tabbar.hidden = agree;
+  const PLANGS = [["en", "English"], ["ko", "한국어"], ["ja", "日本語"], ["zh", "中文"], ["ru", "Русский"], ["de", "Deutsch"],
+    ["uz", "O'zbekcha"], ["id", "Bahasa Indonesia"], ["vi", "Tiếng Việt"], ["hi", "हिन्दी"]];
+  let plang = store("sc-plang") || (PLANGS.some(([c]) => c === S.lang) ? S.lang : "en");
+  const loadPolicy = async () => {
+    try {
+      const html = await (await fetch(`/privacy?lang=${plang}`, { credentials: "same-origin" })).text();
+      return new DOMParser().parseFromString(html, "text/html").querySelector("#policy").innerHTML;
+    } catch (e) { return `<p class="error">${esc(t("err_network"))}</p>`; }
+  };
+  const body = await loadPolicy();
+  render(`
+    ${agree ? "" : `<div class="page-head">${backBtn("#/profile")}</div>`}
+    <div class="stack-lg privacy-page">
+      ${agree ? `<div><h1>${esc(t("privacy_title"))}</h1><p class="muted">${esc(t("privacy_sub"))}</p></div>` : ""}
+      <div class="policy-lang"><span class="muted small">🌐</span><select id="pvLang" aria-label="${esc(t("app_language"))}">${PLANGS.map(([c, n]) =>
+        `<option value="${c}" ${c === plang ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>
+      <div class="card policy" id="pvBody">${body}</div>
+      ${agree ? `<div class="card voice-consent"><div class="card-title">${esc(t("voice_title"))}</div>
+          <dl class="kv"><dt>${esc(t("voice_purpose_l"))}</dt><dd>${esc(t("voice_purpose"))}</dd>
+            <dt>${esc(t("voice_items_l"))}</dt><dd>${esc(t("voice_items"))}</dd>
+            <dt>${esc(t("voice_keep_l"))}</dt><dd>${esc(t("voice_keep"))}</dd></dl>
+          <p class="muted small">${esc(t("voice_optional"))}</p>
+          <label class="row agree-row"><input type="checkbox" id="pvVoice"><span>${esc(t("voice_agree"))}</span></label></div>
+        <label class="row agree-row"><input type="checkbox" id="pvAge"><span>${esc(t("privacy_age"))}</span></label>
+        <button class="btn block big" id="pvGo" disabled>${esc(t("privacy_agree"))}</button>
+        <button class="btn block outline" id="pvNo">${esc(t("privacy_decline"))}</button>` : ""}
+    </div>`);
+  $("#pvLang").onchange = async (e) => {
+    plang = e.target.value;
+    store("sc-plang", plang);
+    $("#pvBody").innerHTML = await loadPolicy();
+  };
+  if (!agree) return;
+  $("#pvAge").onchange = (e) => { $("#pvGo").disabled = !e.target.checked; };
+  $("#pvGo").onclick = async () => {
+    $("#pvGo").disabled = true;
+    const r = await api("/api/privacy/accept", { voice_consent: $("#pvVoice").checked });
+    if (!r.ok) { toast(errText(r)); $("#pvGo").disabled = false; return; }
+    S.me = r.user;
+    const next = S.next && S.next !== "#/privacy" ? S.next : "#/home";
+    S.next = null;
+    go(next);
+  };
+  $("#pvNo").onclick = async () => { await api("/api/auth/signout", {}); S.me = null; go("#/welcome"); };
+}
+
 async function viewSetup() {
   tabbar.hidden = true;
   const me = S.me;

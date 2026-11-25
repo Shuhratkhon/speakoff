@@ -2,14 +2,15 @@
 count in the score:
   phase 1  transcript (multilingual Whisper "small") + fluency (Hangul syllables, Korean fillers)   done
   phase 2  grammar (coach/korean_grammar.py) + vocabulary and range (coach/korean_lex.py)              done
-  phase 3  Korean questions, TOPIK mock test, Korean Ranked
-  phase 4  pronunciation, off-topic / anti-cheat for Korean, tuned on real Korean learner recordings
+  phase 3  Korean questions, TOPIK mock test, Korean Ranked                                         done
+  phase 4  pronunciation (coach/korean_pron.py), off-topic (coach/topic_ko.py), anti-cheat, tuned on
+           4 real learner recordings + 6 native speakers (Zeroth-Korean, CC BY 4.0)                done 2026-11-26
 Level: TOPIK speaking level 1-6 (TOPIK 말하기 평가) and CEFR, instead of IELTS / TOEFL.
 """
 
 from pathlib import Path
 
-AVAILABLE = ["fluency", "grammar", "vocabulary"]     # sections that work for Korean so far (see the phases above)
+AVAILABLE = ["fluency", "grammar", "vocabulary", "pronunciation"]
 SECTIONS = ["fluency", "grammar", "vocabulary", "pronunciation"]
 TOPIK_CEFR = {1: "A1", 2: "A2", 3: "B1", 4: "B2", 5: "C1", 6: "C2"}
 
@@ -30,8 +31,13 @@ def analyse(path, video=None, max_seconds=None):
                     "fillers": len(stats["fillers"]), "repairs": len(stats["repetitions"]) + len(stats["self_corrections"])},
         "grammar_results": [], "pronunciation": None, "delivery": None,
     }
-    from coach import korean_grammar
+    from coach import korean_grammar, korean_pron
     data["grammar_results"] = korean_grammar.check_text(data["text"])
+    try:
+        data["pronunciation"] = korean_pron.analyse(path, kept)
+    except Exception:
+        import traceback
+        traceback.print_exc()               # never block the other scores because of this part
     if video:
         from coach import delivery
         data["delivery"] = delivery.analyse_video(video, words, max_seconds)
@@ -69,11 +75,14 @@ def scores(d):
 def report(d, chosen=None):
     chosen = [s for s in (chosen or SECTIONS) if s in AVAILABLE] or ["fluency"]
     x = scores(d)
-    sec = {"fluency": d["fluency"]["score"], "grammar": x["grammar"], "vocabulary": x["vocabulary"], "pronunciation": None}
+    pron = (d.get("pronunciation") or {}).get("score")
+    sec = {"fluency": d["fluency"]["score"], "grammar": x["grammar"], "vocabulary": x["vocabulary"], "pronunciation": pron}
     vals = [sec[s] for s in chosen if sec[s] is not None]
     overall = round(sum(vals) / len(vals)) if vals else 0
     lvl = topik_level(overall)
     return {"overall": overall, "sections": sec, "on_camera": None,
             "level": {"exam": "topik", "topik": lvl, "cefr": TOPIK_CEFR.get(lvl, "below A1"), "ielts": None,
-                      "too_short": d["n_words"] < 60, "available": AVAILABLE, "coming": [s for s in SECTIONS if s not in AVAILABLE],
+                      "too_short": d["n_words"] < 35,    # Korean words (eojeol) are longer: 35 ~ 60 English words
+                      "available": AVAILABLE, "coming": [s for s in SECTIONS if s not in AVAILABLE],
+                      "pronunciation": d.get("pronunciation"),
                       "vocabulary": x["vocab"], "grammar_range": x["rng"], "ko": x}}

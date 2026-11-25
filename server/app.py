@@ -103,7 +103,8 @@ def user_json(u):
             "plan_period": u["plan_period"], "plan_renews": u["plan_renews"], "created": u["created"][:10],
             "card": ranked.card(u), "country": u["country"], "credits": u["credits"], "shields": u["shields"], "share_answers": bool(u["share_answers"]),
             "display_name": u["display_name"], "learn_lang": u["learn_lang"], "learn_langs": plans.learn_langs(u),
-            "lang_cap": plans.plan_of(u)["langs"], "country_change": ranks.country_change(u),
+            "privacy_ok": (u["privacy_version"] or 0) >= PRIVACY_VERSION, "voice_consent": u["voice_consent"] == 1,
+            "lang_cap": plans.plan_of(u)["langs"], "lang_cooling": plans.lang_cooling(u), "country_change": ranks.country_change(u),
             "has_password": bool(u["has_password"]), "google": bool(u["google_sub"]), "apple": bool(u["apple_sub"])}
 
 
@@ -126,6 +127,49 @@ def index():
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(FRONT, "icon.svg", mimetype="image/svg+xml")
+
+
+PRIVACY_VERSION = 4       # bump when front_end/privacy/<lang>.html changes in an important way: everyone agrees again
+
+
+PRIVACY_LANGS = {"en": "English", "ko": "한국어", "ja": "日本語", "zh": "中文", "ru": "Русский", "de": "Deutsch",
+                 "uz": "O'zbekcha", "id": "Bahasa Indonesia", "vi": "Tiếng Việt", "hi": "हिन्दी"}
+PRIVACY_CSS = """:root{--bg:#0f1117;--text:#e8eaf0;--muted:#9aa1b2;--line:#262a36;--accent:#6c8cff}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--text:#1b1f2a;--muted:#5d6473;--line:#e3e6ee;--accent:#3a5cf0}}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px 64px}h1{font-size:28px;margin:0 0 4px}h2{font-size:19px;margin:28px 0 8px}
+.muted{color:var(--muted);font-size:14px}ul{padding-left:20px}li{margin:4px 0}a{color:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0;display:block;overflow-x:auto}
+th,td{text-align:left;vertical-align:top;padding:8px 6px;border-bottom:1px solid var(--line);min-width:110px}
+nav{max-width:760px;margin:0 auto;padding:16px 16px 0;display:flex;flex-wrap:wrap;gap:6px}
+nav a{font-size:13px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;text-decoration:none;color:var(--muted)}
+nav a.on{color:var(--text);border-color:var(--accent)}"""
+
+
+@app.get("/privacy")
+def privacy_page():
+    """Public Privacy Policy in 10 languages (the App Store / Google Play need a public link): /privacy?lang=ko"""
+    lang = request.args.get("lang") if request.args.get("lang") in PRIVACY_LANGS else "en"
+    body = (FRONT / "privacy" / f"{lang}.html").read_text(encoding="utf-8")
+    nav = "".join(f'<a href="/privacy?lang={c}" class="{"on" if c == lang else ""}" hreflang="{c}">{n}</a>'
+                  for c, n in PRIVACY_LANGS.items())
+    html = (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>Speakoff Privacy Policy</title>'
+            f'<style>{PRIVACY_CSS}</style></head><body><nav>{nav}</nav><main id="policy">{body}</main></body></html>')
+    return app.response_class(html, mimetype="text/html")
+
+
+@app.post("/api/privacy/accept")
+@login_required
+def privacy_accept():
+    body = request.get_json(silent=True) or {}
+    db.run("UPDATE users SET privacy_version=?, privacy_at=? WHERE id=?", PRIVACY_VERSION, now_iso(), g.user["id"])
+    if "voice_consent" in body:                     # asked separately on the same screen; never bundled
+        db.run("UPDATE users SET voice_consent=? WHERE id=?", int(bool(body["voice_consent"])), g.user["id"])
+        if not body["voice_consent"]:
+            from server import biometric
+            biometric.delete_user(g.user["id"])
+    return jsonify({"ok": True, "user": user_json(current_user())})
 
 
 @app.get("/<path:name>")
@@ -361,26 +405,27 @@ def settings():
         name = re.sub(r"\s+", " ", str(body["display_name"] or "")).strip()[:30]
         db.run("UPDATE users SET display_name=? WHERE id=?", name or None, g.user["id"])
     langs = plans.learn_langs(g.user)
+    want = langs
     if isinstance(body.get("learn_langs"), list):               # the list chosen in Settings
-        langs = list(dict.fromkeys(x for x in body["learn_langs"] if x in LEARN_LANGS))
-        cap = plans.plan_of(g.user)["langs"]
-        if not langs:
-            return err("lang_need_one")
-        if cap and len(langs) > cap:
-            return err("lang_limit", 402)
-        db.run("UPDATE users SET learn_langs=? WHERE id=?", ",".join(langs), g.user["id"])
-        if g.user["learn_lang"] not in langs:
-            db.run("UPDATE users SET learn_lang=? WHERE id=?", langs[0], g.user["id"])
-    if body.get("learn_lang") in LEARN_LANGS:                   # the language practised now
-        new = body["learn_lang"]
-        if new not in langs:
-            cap = plans.plan_of(g.user)["langs"]
-            if cap and len(langs) >= cap:
-                if len(langs) > 1 or "learn_langs" in body:
-                    return err("lang_limit", 402)
-                langs = []                                      # only one allowed: swap it
-            langs.append(new)
-        db.run("UPDATE users SET learn_lang=?, learn_langs=? WHERE id=?", new, ",".join(dict.fromkeys(langs)), g.user["id"])
+        want = list(dict.fromkeys(x for x in body["learn_langs"] if x in LEARN_LANGS))
+    active = body.get("learn_lang") if body.get("learn_lang") in LEARN_LANGS else None
+    if active and active not in want:                           # switching to a language not in the list adds it
+        want = want + [active]
+    if want != langs:
+        problem, params, cooling = plans.set_langs(g.user, want)
+        if problem:
+            return err(problem, 402 if problem == "lang_limit" else 400, **params)
+        db.run("UPDATE users SET learn_langs=?, lang_removed=? WHERE id=?", ",".join(want),
+               ",".join(f"{k}:{(date.fromisoformat(v) - timedelta(days=plans.LANG_COOLDOWN)).isoformat()}"
+                        for k, v in cooling.items()), g.user["id"])
+    if active or g.user["learn_lang"] not in want:
+        db.run("UPDATE users SET learn_lang=? WHERE id=?", active or want[0], g.user["id"])
+    if "voice_consent" in body:                                 # separate consent; withdrawing deletes at once
+        on = bool(body["voice_consent"])
+        db.run("UPDATE users SET voice_consent=? WHERE id=?", int(on), g.user["id"])
+        if not on:
+            from server import biometric
+            biometric.delete_user(g.user["id"])
     if "share_answers" in body:
         db.run("UPDATE users SET share_answers=? WHERE id=?", int(bool(body["share_answers"])), g.user["id"])
     if "country" in body and re.fullmatch(r"[A-Z]{2}", str(body["country"] or "")) and body["country"] != g.user["country"]:
@@ -442,6 +487,9 @@ def delete_account():
             return err("err_current_password")
     elif (body.get("password") or "").strip().lower() != g.user["username"].lower():
         return err("err_type_username")
+    from server import biometric
+    biometric.delete_user(g.user["id"])
+    db.run("DELETE FROM audio_hashes WHERE user_id=?", g.user["id"])
     for r in db.all_("SELECT id, audio_path, src_path FROM recordings WHERE user_id=?", g.user["id"]):
         for p in (r["audio_path"], r["src_path"]):
             if p:
@@ -715,10 +763,12 @@ def result_view(r, lang):
                 "vocabulary": {"b1": lv["vocabulary"]["b1_plus"], "b2": lv["vocabulary"]["b2_plus"],
                                "variety": lv["vocabulary"]["variety"],
                                "words": (lv["vocabulary"]["advanced_words"] + lv["vocabulary"]["b1_words"])[:12]},
+                "pronunciation": _ko_pron(d.get("pronunciation")),
                 "feedback": "", "transcript": d["text"], "camera": None, "repetition": None,
                 "audio": bool(r["audio_path"]) and not r["audio_deleted"], "audio_deleted": bool(r["audio_deleted"]),
-                "keep": plans.KEEP_AUDIOS, "keep_forever": bool(r["keep_forever"]), "is_mock": False,
-                "integrity": res.get("integrity"), "profanity": False, "off_topic": False, "topic": None}
+                "keep": plans.KEEP_AUDIOS, "keep_forever": bool(r["keep_forever"]),
+                "integrity": res.get("integrity"), "profanity": bool(d.get("profanity")),
+                "off_topic": bool(res.get("off_topic")), "topic": res.get("topic_verdict")}
     acc, per100, clean = grammar.grammar_score(d["grammar_results"], d["n_words"])
     g_total, range_score = level.grammar_total(acc, lv["grammar_range"])
     cap, _ = level.repetition_cap(lv["originality"])
@@ -751,6 +801,19 @@ def result_view(r, lang):
         "audio_deleted": bool(r["audio_deleted"]), "keep": plans.KEEP_AUDIOS,
         "keep_forever": bool(r["keep_forever"]), "is_mock": bool(r["is_mock"]), "off_topic": bool(res.get("off_topic")), "topic": res.get("topic_verdict"), "profanity": bool(d.get("profanity")), "integrity": res.get("integrity"),
     }
+
+
+KO_SOUND_NAMES = {"J": "ㅑ ㅕ ㅛ ㅠ (y-)", "W": "ㅘ ㅝ (w-)"}
+
+
+def _ko_pron(p):
+    """Korean pronunciation (coach/korean_pron.py) in the shape the result page uses for English."""
+    if not p or p.get("score") is None:
+        return None
+    name = lambda x: KO_SOUND_NAMES.get(x, x)                 # noqa: E731
+    return {"right": round((p["measures"] or {}).get("right", 0) * 100),
+            "mistakes": [{"e": name(m["expected"]), "h": name(m["heard"]), "words": m["words"], "n": m["count"]}
+                         for m in p["mistakes"]]}
 
 
 @app.get("/api/recordings/<rec_id>")
@@ -854,7 +917,7 @@ def ranked_overview():
 @app.get("/api/ranked/leaderboard")
 @login_required
 def ranked_leaderboard():
-    scope = "national" if request.args.get("scope") == "national" else "global"
+    scope = request.args.get("scope") if request.args.get("scope") in ("national", "friends") else "global"
     return jsonify(ranked.leaderboard(g.user, scope))
 
 
@@ -1013,7 +1076,12 @@ def public_profile(username):
     u = ranked.ensure_season(u)
     n_skills = db.one("SELECT COUNT(*) n FROM skill_grants WHERE user_id=?", u["id"])["n"]
     n_achs = db.one("SELECT COUNT(*) n FROM user_awards WHERE user_id=? AND kind='ach'", u["id"])["n"]
-    return jsonify({"card": ranked.card(u), "stats": rewards.stats(u["id"], u["season"]),
+    season = None if request.args.get("season") == "all" else u["season"]
+    stats = rewards.stats(u["id"], season)
+    if season is None:          # All seasons: current rank next to the highest rank ever reached (like my profile)
+        stats["cur_rank"] = ranked.card(u)["rank"]
+        stats["max_rank"] = ranks.rank_of(max(u["best_rp"], u["rp"]))
+    return jsonify({"card": ranked.card(u), "stats": stats, "skills": rewards.owned_skills(u["id"]),
                     "relation": friends.relation(g.user["id"], u["id"]),
                     "skills_earned": n_skills, "achs_earned": n_achs, "me": u["id"] == g.user["id"],
                     "best_rank": ranks.rank_of(u["best_rp"])})
@@ -1084,6 +1152,12 @@ def challenge_act(cid, action):
 
 def create_app(warm_up=True):
     db.init()
+    from server import biometric
+    moved = biometric.migrate(db)            # old fingerprints -> encrypted, separate store (consented players only)
+    if moved:
+        print("voice fingerprints moved to the biometric store:", moved)
+    from server import backup
+    backup.start()                           # encrypted daily backup of app.db, kept 30 days (server/backup.py)
     worker.start(warm_up)
     return app
 

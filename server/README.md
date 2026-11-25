@@ -57,7 +57,7 @@ Real payments (Visa, Mastercard, JCB, UnionPay, Amex) come with the business reg
 - Seasons are numbered from launch: Season 1 = November 2026.
 - Friendly matches (challenge a friend): same rules, no RP, not in statistics or skills, but they count toward the
   matches a day.
-- Ranks: 300 RP each (Copper 0 … Diamond 1500, Master 1800+). Seasons last 1 month; a new season keeps half the RP.
+- Ranks: 300 RP each (Copper 0 … Diamond 1500, Master 1800+). Seasons last 1 month; at a new season Copper stays Copper, Bronze-Gold go to Bronze I, Platinum-Master to Gold I. RP per match: ranks.rp_change (higher ranks win and lose less, wins worth 20% more).
 - Ranked answers are not kept as audio and do not change the level or the Progress charts.
 
 ## Sign in with Google / Apple

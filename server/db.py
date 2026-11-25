@@ -135,6 +135,12 @@ CREATE TABLE IF NOT EXISTS reports (            -- "Report" after a ranked answe
     created     REAL NOT NULL,
     PRIMARY KEY (match_id, reporter_id)
 );
+CREATE TABLE IF NOT EXISTS audio_hashes (       -- SHA-256 of answers already sent (replayed-recording check)
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hash    TEXT NOT NULL,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ah_user ON audio_hashes(user_id, hash);
 CREATE TABLE IF NOT EXISTS voice_prints (       -- voice fingerprints of a player's honest answers (coach/anticheat.py)
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created REAL NOT NULL,
@@ -204,9 +210,13 @@ USER_COLUMNS = {
     "reports_open": "INTEGER NOT NULL DEFAULT 0",       # reports since the last ban (3 = 1-week Ranked ban)
     "ranked_ban_until": "REAL",
     "display_name": "TEXT",                         # the player's own name (asked after sign-up)
-    "learn_langs": "TEXT",
-    "country_changed": "TEXT",                         # season id of the last country change (once a season)                             # every language the player learns, comma list (plan limit)
-    "learn_lang": "TEXT NOT NULL DEFAULT 'en'",     # language being learned (English now; ko/es/de/ja coming)  # 1 = opponents may play this player's ranked answers
+    "learn_langs": "TEXT",                          # every language the player learns, comma list (plan limit)
+    "lang_removed": "TEXT",                         # "ko:2026-11-26,..." removed languages (30-day slot cooldown)
+    "country_changed": "TEXT",                      # season id of the last country change (once a season)
+    "privacy_version": "INTEGER",
+    "voice_consent": "INTEGER",                     # separate consent to the voice fingerprint: 1 yes, 0 no, NULL not asked                   # Privacy Policy version the player agreed to (front_end/privacy.html)
+    "privacy_at": "TEXT",                           # when they agreed
+    "learn_lang": "TEXT NOT NULL DEFAULT 'en'",     # the language practised now
     "plan_credit_month": "TEXT",
     "activity": "TEXT",                            # the screen the player is on (shown to friends while online)
     "plan_bonus_given": "TEXT",                    # monthly plans whose one-time bonus was given ("plus,pro")                   # last month Plus / Pro bonus credits were given (YYYY-MM)

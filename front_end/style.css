@@ -965,3 +965,22 @@ a.linkbtn.center { display: block; text-align: center; margin-top: 4px; }
 .learn-chip:disabled { opacity: .45; cursor: default; }
 .learn-chip .soon { font-size: 10px; opacity: .8; }
 .lang-sw button { white-space: nowrap; }
+
+/* Privacy Policy (after sign-up and in Settings) */
+.privacy-page .policy { line-height: 1.6; font-size: 14px; }
+.privacy-page .policy h1 { font-size: 20px; margin: 0 0 4px; }
+.privacy-page .policy h2 { font-size: 16px; margin: 20px 0 6px; }
+.privacy-page .policy ul { padding-left: 18px; }
+.privacy-page .policy table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.privacy-page .policy th, .privacy-page .policy td { text-align: left; vertical-align: top; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.privacy-page .agree-row { gap: 10px; align-items: flex-start; cursor: pointer; }
+.privacy-page .agree-row input { width: 20px; height: 20px; flex: none; margin-top: 2px; accent-color: var(--accent); }
+
+.privacy-page .voice-consent .kv { display: block; margin: 8px 0; }
+.privacy-page .voice-consent .kv dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+.privacy-page .voice-consent .kv dd { margin: 2px 0 0; text-align: left; font-weight: 400; font-size: 14px; }
+
+.privacy-page .policy-lang { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-bottom: -6px; }
+.privacy-page .policy-lang select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); cursor: pointer; }
+.privacy-page .policy table { display: block; overflow-x: auto; }

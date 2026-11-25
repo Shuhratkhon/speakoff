@@ -55,9 +55,11 @@ def claim(user):
     if not st["can_claim"]:
         return None, st
     kind, amount = st["next_kind"], st["next_amount"]
-    db.run("INSERT OR IGNORE INTO daily_claims (user_id, day, streak_day, amount, claimed_at) VALUES (?,?,?,?,?)",
-           user["id"], date.today().isoformat(), st["current"], amount,
-           datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    # the day is the server's date, never the phone's; two taps at once: only the first row counts
+    if not db.run("INSERT OR IGNORE INTO daily_claims (user_id, day, streak_day, amount, claimed_at) VALUES (?,?,?,?,?)",
+                  user["id"], date.today().isoformat(), st["current"], amount,
+                  datetime.now(timezone.utc).isoformat(timespec="seconds")).rowcount:
+        return None, state(user)
     if amount:
         db.run("UPDATE users SET credits=credits+? WHERE id=?", amount, user["id"])
     got = {"kind": kind, "amount": amount}

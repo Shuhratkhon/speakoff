@@ -1,9 +1,9 @@
 """Ranks and seasons for Ranked mode.
 
 7 ranks, each with 3 divisions of 100 RP (I -> II -> III, user 2026-11-24), Master has no divisions; instead Master players show
-their wins at Master this season, e.g. "Master 27" (server/ranked.py master_wins):
+their full RP, e.g. "Master 1807" (user, 2026-11-26):
   Copper 0-299 · Bronze 300-599 · Silver 600-899 · Gold 900-1199 · Platinum 1200-1499 · Diamond 1500-1799 · Master 1800+
-A season lasts 1 calendar month (decided 2026-11-23). At a new season everyone keeps half of their RP.
+A season lasts 1 calendar month (decided 2026-11-23). At a new season: Copper stays Copper; Bronze, Silver, Gold start at Bronze I; Platinum, Diamond, Master at Gold I.
 """
 
 from datetime import date, timedelta
@@ -14,6 +14,33 @@ DIV_SIZE = 100
 MASTER_RP = RANK_SIZE * (len(RANKS) - 1)        # 1800
 
 
+# RP per match: higher ranks win AND lose less; wins are worth a bit more than losses so players can climb;
+# the opponent's RP matters less than in plain Elo (scale 800 instead of 400).
+K_BY_RANK = {"copper": 40, "bronze": 36, "silver": 32, "gold": 28, "platinum": 24, "diamond": 20, "master": 16}
+WIN_BOOST = 1.2               # a win gives 20% more than a loss to an equal player takes
+ELO_SCALE = 800
+MIN_WIN, MIN_LOSS = 3, 3      # a win always gives something, a loss always costs something
+
+
+def rp_change(my_rp, opp_rp, result):
+    """RP won or lost by one match ("win" / "draw" / "loss"), before the bot halving and the 0 floor."""
+    k = K_BY_RANK[rank_of(my_rp)["rank"]]
+    expected = 1 / (1 + 10 ** ((opp_rp - my_rp) / ELO_SCALE))
+    if result == "win":
+        return max(round(k * (1 - expected) * WIN_BOOST), MIN_WIN)
+    if result == "loss":
+        return min(round(-k * expected), -MIN_LOSS)
+    return round(k * (0.5 - expected))
+
+
+# New season (user, 2026-11-26): Copper stays Copper; Bronze, Silver, Gold -> Bronze I; Platinum, Diamond, Master -> Gold I
+def season_start_rp(old_rp):
+    index = rank_of(old_rp)["index"]
+    if index == 0:
+        return max(0, int(old_rp or 0))
+    return RANK_SIZE * (1 if index <= 3 else 3)
+
+
 def rank_of(rp):
     rp = max(0, int(rp or 0))
     if rp >= MASTER_RP:
@@ -22,6 +49,11 @@ def rank_of(rp):
     step = (rp % RANK_SIZE) // DIV_SIZE           # 0, 1, 2
     floor = index * RANK_SIZE + step * DIV_SIZE
     return {"rank": RANKS[index], "index": index, "div": step + 1, "rp": rp, "floor": floor, "next": floor + DIV_SIZE}
+
+
+def rank_base(rp):
+    """Lowest RP of the rank this RP is in (its division I): a player never drops out of a rank they reached."""
+    return rank_of(rp)["index"] * RANK_SIZE
 
 
 def rank_floor(name):

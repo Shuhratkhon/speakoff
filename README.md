@@ -78,3 +78,7 @@ The anti-cheat voice check uses [microsoft/wavlm-base-plus-sv](https://huggingfa
 Korean: grammar corrections by [Qwen/Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B) (Apache-2.0), morphemes by
 [Kiwi](https://github.com/bab2min/kiwipiepy) (LGPL-2.1), word levels from the NIKL / TOPIK vocabulary lists collected in
 [combined_korean_vocabulary_list](https://github.com/julienshim/combined_korean_vocabulary_list).
+Korean off-topic check: [intfloat/multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT).
+Korean pronunciation is calibrated with 6 native speakers from the Zeroth-Korean corpus test set
+([OpenSLR 40](https://www.openslr.org/40/), Lucas Jo and Wonkyum Lee, CC BY 4.0), joined into one-minute files
+(samples/native_*.ogg, not in git).

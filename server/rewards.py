@@ -226,6 +226,13 @@ def frames(uid):
     return out
 
 
+def owned_skills(uid):
+    """Skills a player has (read only, for other players' profiles): rarest / most earned first."""
+    counts = skill_counts(uid)
+    out = [{"id": s, "icon": SKILL_ICON[s], "count": counts[s], "rarity": skill_rarity(counts[s])} for s in counts]
+    return sorted(out, key=lambda x: -x["count"])
+
+
 def earned_skills(uid):
     return set(skill_counts(uid))
 

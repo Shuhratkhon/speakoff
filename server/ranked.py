@@ -26,7 +26,6 @@ MIN_S, MAX_S = 30, 60    # answer length
 GRACE = 45               # extra time for the upload after the longest answer
 WAIT_PLAYER = 20         # seconds in the queue before a replay / bot match
 QUEUE_STALE = 10         # a queued player who stopped asking is removed
-K = 40                   # Elo factor
 DRAW_GAP = 1             # only the same score is a draw (user, 2026-11-25)
 HISTORY = 10             # match log: the last 10 matches, for every plan
 SECTIONS = ["fluency", "grammar", "vocabulary", "pronunciation"]
@@ -54,10 +53,10 @@ def rated(user):
 
 
 def ensure_season(user):
-    """New season: keep half of the RP."""
+    """New season: Copper stays; Bronze-Gold -> Bronze I; Platinum-Master -> Gold I (ranks.season_start_rp)."""
     sid = ranks.season_id()
     if user["season"] != sid:
-        db.run("UPDATE users SET rp=?, season=? WHERE id=?", user["rp"] // 2 if user["season"] else 0, sid, user["id"])
+        db.run("UPDATE users SET rp=?, season=? WHERE id=?", ranks.season_start_rp(user["rp"]) if user["season"] else 0, sid, user["id"])
         user = db.one("SELECT * FROM users WHERE id=?", user["id"])
     return dict(user)
 
@@ -69,22 +68,15 @@ def played_today(uid):
 
 def limits(user):
     from server import shop
-    per_day = plans.plan_of(user)["ranked"] + shop.bought_today(user["id"], "ranked")
-    return {"per_day": per_day, "left": max(per_day - played_today(user["id"]), 0)}
-
-
-def master_wins(uid, sid=None, lang=None):
-    """Master players show their wins at Master this season next to the rank (e.g. "Master 27")."""
-    return db.one("SELECT COUNT(*) n FROM match_players p JOIN matches m ON m.id=p.match_id WHERE p.user_id=? "
-                  "AND p.is_ghost=0 AND p.result='win' AND p.rp_before>=? AND m.kind!='friendly' AND m.season=?",
-                  uid, ranks.MASTER_RP, sid or ranks.season_id())["n"]
+    base = plans.plan_of(user)["ranked"]
+    unlimited = base is None                       # Pro: unlimited, with a fair-use cap
+    per_day = (plans.FAIR_RANKED if unlimited else base) + shop.bought_today(user["id"], "ranked")
+    return {"per_day": per_day, "left": max(per_day - played_today(user["id"]), 0), "unlimited": unlimited}
 
 
 def rank_for(uid, rp, lang=None):
-    r = ranks.rank_of(rp)
-    if r["rank"] == "master" and uid:
-        r["wins"] = master_wins(uid, lang=lang)
-    return r
+    """Master shows the player's full RP next to the rank, e.g. "Master 1807" (user, 2026-11-26)."""
+    return ranks.rank_of(rp)
 
 
 def card(u, rp=None):
@@ -281,7 +273,7 @@ def analyse_answer(match_id, slot):
                 raise Profane()                          # not the first time: a loss, never played to the opponent
             warned = True                                # first time ever: only a warning
         worker.check_topic(d, db.one("SELECT question FROM matches WHERE id=?", match_id)["question"], p["user_id"])
-        res = worker.check_integrity(d, audio, p["user_id"], SECTIONS)
+        res = worker.check_integrity(d, audio, p["user_id"], SECTIONS, original=src)
         lv = res["level"]
         extras = {"words": d["n_words"], "fillers": d["fluency"].get("fillers", 0),
                   "mistakes": sum(len(s["mistakes"]) for s in d["grammar_results"]),
@@ -363,16 +355,11 @@ def finish(match_id):
             delta = None
             if p["user_id"] is not None and not p["is_ghost"] and r != "none" and m["kind"] != "friendly":
                 u = rating(p["user_id"], m["lang"])
-                s = {"win": 1, "draw": .5, "loss": 0}[r]
-                expected = 1 / (1 + 10 ** ((o["rp_before"] - p["rp_before"]) / 400))
-                delta = round(K * (s - expected))
-                if r == "win":
-                    delta = max(delta, 5)
-                elif r == "loss":
-                    delta = min(delta, -5)
+                delta = ranks.rp_change(p["rp_before"], o["rp_before"], r)
                 if m["kind"] == "bot":
                     delta = round(delta / 2)
-                delta = max(delta, -u["rp"])               # never below 0 RP
+                # a reached rank is kept: never below its division I (Gold I 0 RP = 900); Copper: never below 0
+                delta = max(delta, ranks.rank_base(u["rp"]) - u["rp"])
                 if delta < 0 and db.run("UPDATE users SET shields=shields-1 WHERE id=? AND shields>0",
                                         p["user_id"]).rowcount:
                     delta = 0                              # a rank shield (bought with credits) took the loss
@@ -522,9 +509,28 @@ def overview(user):
             "rules": {"read_s": READ_S, "min_s": MIN_S, "max_s": MAX_S}}
 
 
+NATIONAL_MIN = 20         # a country's board opens once it has 20 ranked players this season (user, 2026-11-26)
+
+
+def _row(u, me_id):
+    return {"username": u["username"], "rank": rank_for(u["id"], u["rp"]), "me": u["id"] == me_id,
+            "photo": f"/api/photo/{u['username']}?v={u['photo']}" if u["photo"] else None, "frame": u["frame"],
+            "country": u["country"], "name_style": cosmetics.worn(u, "name_style")}
+
+
 def leaderboard(user, scope="global", limit=50):
-    """Highest-rated players this season (who played at least one ranked match), worldwide or in one country."""
+    """Highest-rated players this season (who played at least one ranked match): worldwide, in one country (once
+    it has NATIONAL_MIN players) or among the player's friends (every friend, even without a match yet)."""
     user = ensure_season(user)
+    if scope == "friends":
+        ids = [r["friend_id"] for r in db.all_("SELECT friend_id FROM friendships WHERE user_id=? AND status='accepted'",
+                                                user["id"])]
+        people = [user] + [ensure_season(u) for u in (db.one("SELECT * FROM users WHERE id=?", i) for i in ids) if u]
+        people.sort(key=lambda u: (-u["rp"], u["id"]))
+        place = next(i for i, u in enumerate(people) if u["id"] == user["id"]) + 1
+        return {"scope": scope, "country": user["country"], "board": [_row(u, user["id"]) for u in people[:limit]],
+                "me_place": place, "me": {**card(user), "country": user["country"]}, "season_no": ranks.season_number(),
+                "friends": len(ids)}
     sid = ranks.season_id()
     # one rank per player for all languages, so both boards mix every language (user, 2026-11-25)
     src, rpc, sc = "users u", "u.rp", "u.season"
@@ -535,10 +541,13 @@ def leaderboard(user, scope="global", limit=50):
             return {"scope": scope, "country": None, "board": [], "me_place": None}
         where += " AND u.country=?"
         args.append(user["country"])
+        n = db.one(f"SELECT COUNT(*) n FROM {src} WHERE {where}", *args)["n"]
+        if n < NATIONAL_MIN:
+            return {"scope": scope, "country": user["country"], "board": [], "me_place": None, "locked": True,
+                    "count": n, "need": NATIONAL_MIN, "me": {**card(user), "country": user["country"]},
+                    "season_no": ranks.season_number()}
     rows = db.all_(f"SELECT u.* FROM {src} WHERE {where} ORDER BY {rpc} DESC, u.id LIMIT ?", *args, limit)
-    board = [{"username": u["username"], "rank": rank_for(u["id"], u["rp"]), "me": u["id"] == user["id"],
-              "photo": f"/api/photo/{u['username']}?v={u['photo']}" if u["photo"] else None, "frame": u["frame"],
-              "country": u["country"], "name_style": cosmetics.worn(u, "name_style")} for u in rows]
+    board = [_row(u, user["id"]) for u in rows]
     me_place = None
     if db.one(f"SELECT 1 FROM {src} WHERE {where} AND u.id=?", *args, user["id"]):
         me_place = db.one(f"SELECT COUNT(*) n FROM {src} WHERE {where} AND ({rpc}>? OR ({rpc}=? AND u.id<?))",

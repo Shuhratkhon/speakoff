@@ -1,6 +1,6 @@
 """What Speakoff credits buy (prices decided 2026-11-24). Credits are only earned in the app, never sold for money.
 
-  ranked      +1 ranked match today          30   (at most 1 a day)
+  ranked      +1 ranked match today          30   (at most 1 a day; not for Pro, who has unlimited)
   recording   +1 recording (Free plan)       50   (at most 2 a day)
   shield      rank shield                   110   one lost ranked match costs no RP (1 a day, hold at most 3)
   plus_day    1 day of Plus                 290   Free plan only; buying again adds another day
@@ -85,6 +85,8 @@ def state(user):
             row["ok"] = row["left_today"] > 0
         if name == "recording":
             row["ok"] = row["ok"] and user["plan"] == "free"
+        if name == "ranked":                              # Pro already has unlimited ranked matches
+            row["ok"] = row["ok"] and user["plan"] != "pro"
         if name == "shield":
             row["have"] = user["shields"]
             row["ok"] = row["ok"] and user["shields"] < it["hold"]

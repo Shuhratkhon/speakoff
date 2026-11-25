@@ -20,8 +20,9 @@ import math
 import statistics
 import threading
 
-AI_PPL = 12.0
-SMOOTH_FILLERS_PM, SMOOTH_SPS = 0.5, 4.2
+AI_PPL = {"en": 12.0, "ko": 13.0}            # ko (2026-11-26, evaluate/ko_cheat_eval.py): AI answers 5-10, real speech 16-57
+SMOOTH_FILLERS_PM = 0.5
+SMOOTH_SPS = {"en": 4.2, "ko": 4.8}           # ko: learners <= 4.1 syll/s; natives reading a script 5.0-6.3
 VOICE_MIN, MIN_PRINTS, MAX_PRINTS = 0.88, 3, 10
 JUMP, MIN_HISTORY = 25, 5
 SV_MODEL = "microsoft/wavlm-base-plus-sv"
@@ -79,18 +80,24 @@ def perplexity(text):
         return math.exp(m["llm"](ids, labels=ids).loss.item())
 
 
-def check(d, audio_path, overall, earlier_prints=(), earlier_scores=()):
-    """d = the analysis (text, fluency, duration). Returns the signals, the verdict and this answer's voice print."""
+def check(d, audio_path, overall, earlier_prints=(), earlier_scores=(), use_voice=False, protect=None, replay=False):
+    """d = the analysis (text, fluency, duration). Returns the signals, the verdict and this answer's protected voice
+    template (only when the player consented to the voice check: use_voice). replay = this exact audio file was
+    already sent before (a pre-recorded answer played again)."""
     fl, dur = d.get("fluency") or {}, max(d.get("duration") or 0, 1)
     out = {}
-    english = d.get("lang", "en") == "en"          # the text and smoothness limits are calibrated on English
-    ppl = perplexity(d.get("text", "")) if english else None
+    lang = d.get("lang", "en")
+    calibrated = lang in AI_PPL                    # text and smoothness limits exist for English and Korean
+    ppl = perplexity(d.get("text", "")) if calibrated else None
     out["ppl"] = round(ppl, 1) if ppl else None
-    out["ai_text"] = bool(ppl and ppl < AI_PPL)
+    out["ai_text"] = bool(ppl and ppl < AI_PPL[lang])
     fpm = 60 * ((fl.get("fillers") or 0) + (fl.get("repairs") or 0)) / dur
-    out["too_smooth"] = english and fpm < SMOOTH_FILLERS_PM and (fl.get("syllables_per_sec") or 0) > SMOOTH_SPS
-    vp = voiceprint(audio_path)
+    out["too_smooth"] = calibrated and fpm < SMOOTH_FILLERS_PM and (fl.get("syllables_per_sec") or 0) > SMOOTH_SPS[lang]
+    vp = voiceprint(audio_path) if use_voice else None
+    if vp is not None and protect:
+        vp = protect(vp)                      # never keep or compare the raw vector (server/biometric.py)
     out["voice"], out["voice_mismatch"] = None, False
+    out["replay"] = bool(replay)
     prints = [p for p in earlier_prints if p][-MAX_PRINTS:]
     if vp and len(prints) >= MIN_PRINTS:
         import numpy as np
@@ -101,7 +108,7 @@ def check(d, audio_path, overall, earlier_prints=(), earlier_scores=()):
     scores = [s for s in earlier_scores if s is not None]
     out["jump"] = len(scores) >= MIN_HISTORY and overall >= statistics.median(scores) + JUMP
     script = out["ai_text"] and out["too_smooth"]
-    if out["voice_mismatch"] or script or (out["jump"] and (out["ai_text"] or out["too_smooth"])):
+    if out["replay"] or out["voice_mismatch"] or script or (out["jump"] and (out["ai_text"] or out["too_smooth"])):
         out["verdict"] = "cheat"
     elif out["ai_text"] or out["too_smooth"]:
         out["verdict"] = "tip"

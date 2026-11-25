@@ -16,16 +16,38 @@ SYSTEM = ("너는 한국어 선생님이다. 한국어 학습자가 말한 문�
 SHOTS = [("저는 학교을 가요.", "저는 학교에 가요."), ("어제 친구를 만나요.", "어제 친구를 만났어요."),
          ("저는 커피를 좋아해요.", "저는 커피를 좋아해요.")]
 MAX_CHANGE = 0.5            # a "correction" that rewrites more than half of the sentence is not trusted
+STYLE_GAIN = 6.0           # a "style" change still counts when the original form is clearly wrong (어렵어요 -> 어려워요)
 MIN_GAIN = -3.6             # Kiwi's language-model score must not drop more than this (bad "fixes" drop it)
-CONTENT = ("NNG", "NNP", "NNB", "NR", "NP", "VV", "VA", "MAG", "MM", "SN", "SL", "XR")
+CONTENT = ("NNG", "NNP", "NNB", "NR", "NP", "VV", "VA", "MAG", "MAJ", "MM", "SN", "SL", "XR")
 REFUSE = ("죄송", "인공지능", "도와드릴", "처리할 수")
 SAME_EF = {"ᆸ니다", "습니다", "어요", "아요", "에요", "어", "아", "다", "지요", "죠", "요"}   # politeness style, not grammar
 SAME_J = {"이랑", "랑", "하고", "와", "과"}
+TOPIC_SUBJ = {"이", "가", "은", "는", "ᆫ"}      # 제가 <-> 저는: a nuance, not a grammar error (2026-11-26)
 
 # the model needs ~7 GB: on a small machine free it after every recording (set SC_KEEP_KO_GRAMMAR=1 on a big server)
 KEEP_LOADED = os.environ.get("SC_KEEP_KO_GRAMMAR") == "1"
 _lock = threading.Lock()
 _m = {}
+
+
+def free_memory_gb():
+    """Memory the process can still commit (RAM + page file left), in GB; None if unknown."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("len", ctypes.c_ulong), ("load", ctypes.c_ulong)] +                            [(n, ctypes.c_ulonglong) for n in ("tp", "ap", "tf", "af", "tv", "av", "aev")]
+            m = MS()
+            m.len = ctypes.sizeof(MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return min(m.ap + m.af // 4, m.af) / 2 ** 30          # free RAM (plus a little page file), capped by commit left
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2 ** 30
+    except Exception:
+        return None
+
+
+FP32_NEEDS_GB = 9.0         # float32 weights (~7 GB) + working memory
 
 
 def _load():
@@ -34,7 +56,10 @@ def _load():
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
             _m["tok"] = AutoTokenizer.from_pretrained(MODEL)
-            try:      # float32: ~2 s a sentence on CPU but ~7 GB of memory
+            free = free_memory_gb()
+            try:      # float32: ~2 s a sentence on CPU but ~7 GB of memory; on a small machine go straight to bf16
+                if free is not None and free < FP32_NEEDS_GB:
+                    raise MemoryError(f"only {free:.1f} GB free")
                 _m["model"] = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32).eval()
             except (RuntimeError, MemoryError, OSError):     # not enough memory: bfloat16 needs half, ~20 s a sentence
                 import gc
@@ -109,25 +134,32 @@ def trusted(said, fixed):
     from coach.korean_lex import kiwi
     if any(w in fixed for w in REFUSE):
         return False
-    a = [(t.form, t.tag) for t in kiwi().tokenize(said)]
-    b = [(t.form, t.tag) for t in kiwi().tokenize(fixed)]
+    a = [(t.form, t.tag) for t in kiwi().tokenize(said) if not t.tag.startswith("S") or t.tag in ("SN", "SL")]
+    b = [(t.form, t.tag) for t in kiwi().tokenize(fixed) if not t.tag.startswith("S") or t.tag in ("SN", "SL")]
 
     def content(ms):
         return Counter(m for m in ms if m[1].startswith(CONTENT))
 
     def style(ms):
-        return [("EF", "EF") if t == "EF" and f in SAME_EF else ("J", "J") if t.startswith("J") and f in SAME_J
-                else (f, t) for f, t in ms]
+        """Spoken style is not grammar: the sentence ending (없고요 / 없어요 / 없습니다), 랑 / 과, 제가 / 저는."""
+        out = [("J", "J") if t.startswith("J") and f in SAME_J else ("JT", "JT") if t.startswith("J") and f in TOPIC_SUBJ
+               else ("NP", "NP") if t == "NP" and f in ("저", "제", "나", "내") else (f, t) for f, t in ms]
+        while out and out[-1][1] in ("EF", "EC", "JX"):    # the final ending (+ 요); tense (EP) stays
+            out.pop()
+        return out + [("END", "END")]
     if content(a) != content(b):                       # the model changed the words, not the grammar
         return False
-    if style(a) == style(b) and a != b:                # only 해요 <-> 합니다 or 랑 <-> 과
+    gain = kiwi().analyze(fixed)[0][1] - kiwi().analyze(said)[0][1]
+    if style(a) == style(b) and a != b and gain < STYLE_GAIN:   # only a style swap, and what was said is fine too
         return False
     if a == b and len(_norm(fixed)) > len(_norm(said)):     # 줬어요 -> 주었어요 is not a fix
         return False
+    if a == b:                                          # same words, only the form changed (어렵어요 -> 어려워요)
+        return gain >= STYLE_GAIN
     added, removed = Counter(b) - Counter(a), Counter(a) - Counter(b)
-    if not removed and all(t.startswith("J") for _, t in added):    # a dropped particle put back: fine in speech
+    if added and not removed and all(t.startswith("J") for _, t in added):    # a dropped particle put back: fine in speech
         return False
-    return kiwi().analyze(fixed)[0][1] - kiwi().analyze(said)[0][1] >= MIN_GAIN
+    return gain >= MIN_GAIN
 
 
 def check_text(text):

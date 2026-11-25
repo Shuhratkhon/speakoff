@@ -62,24 +62,41 @@ def topic_question(rec):
     return rec["question"]
 
 
-def check_integrity(d, audio_path, uid, sections):
+def _seen_audio(uid, audio_path):
+    """True if this exact audio file was already sent by the player (a recording replayed). Keeps a hash only."""
+    import hashlib
+    try:
+        h = hashlib.sha256(Path(audio_path).read_bytes()).hexdigest()
+    except Exception:
+        return False
+    if db.one("SELECT 1 FROM audio_hashes WHERE user_id=? AND hash=?", uid, h):
+        return True
+    db.run("INSERT INTO audio_hashes (user_id, hash, created) VALUES (?,?,?)", uid, h, time.time())
+    return False
+
+
+def check_integrity(d, audio_path, uid, sections, original=None):
     """Anti-cheat (coach/anticheat.py): run after scoring; returns the (maybe capped) scores."""
     res = summary(d, sections)
     if not uid:
         return res
     try:
         from coach import anticheat
-        prints = [json.loads(r["emb"]) for r in db.all_("SELECT emb FROM voice_prints WHERE user_id=? ORDER BY created DESC LIMIT ?",
-                                                         uid, anticheat.MAX_PRINTS)]
+        from server import biometric
+        user = db.one("SELECT voice_consent FROM users WHERE id=?", uid)
+        use_voice = bool(user and user["voice_consent"] == 1)       # separate, explicit consent only
+        prints = biometric.recent(uid, anticheat.MAX_PRINTS) if use_voice else []
+        replay = _seen_audio(uid, original or audio_path)     # the uploaded file: a conversion is never byte-identical
         scores = [r["overall"] for r in db.all_("SELECT overall FROM recordings WHERE user_id=? AND status='done' "
                                                 "ORDER BY created DESC LIMIT 10", uid)]
         scores += [r["overall"] for r in db.all_("SELECT p.overall FROM match_players p JOIN matches m ON m.id=p.match_id "
                                                  "WHERE p.user_id=? AND p.is_ghost=0 AND p.overall IS NOT NULL "
                                                  "ORDER BY m.created DESC LIMIT 10", uid)]
-        out, vp = anticheat.check(d, audio_path, res["overall"], prints[::-1], scores)
+        out, vp = anticheat.check(d, audio_path, res["overall"], prints, scores, use_voice=use_voice,
+                                  protect=biometric.protect, replay=replay)
         d["integrity"] = out
-        if vp and out["verdict"] != "cheat":          # only honest answers teach us the player's voice
-            db.run("INSERT INTO voice_prints (user_id, created, emb) VALUES (?,?,?)", uid, time.time(), json.dumps(vp))
+        if vp and use_voice and out["verdict"] != "cheat":     # only honest answers teach us the player's voice
+            biometric.add(uid, vp)
         return summary(d, sections)
     except Exception:
         traceback.print_exc()                       # never block scoring because of this check
@@ -101,7 +118,16 @@ def earlier_answers(uid, question, n=40):
 
 
 def check_topic(d, question, uid=None):
-    if d.get("lang", "en") != "en":                # the off-topic models are English-only so far
+    if d.get("lang", "en") != "en":
+        try:                                       # a memorised / replayed answer is caught in every language
+            from coach import topic
+            if uid and topic.repeated(d.get("text", ""), earlier_answers(uid, question)):
+                d["topic"] = {"verdict": "repeated", "off": True}
+            elif d["lang"] == "ko":                 # Korean off-topic check (coach/topic_ko.py, phase 4)
+                from coach import topic_ko
+                d["topic"] = topic_ko.check(question, d.get("text", ""))
+        except Exception:
+            traceback.print_exc()
         return
     try:
         from coach import topic
@@ -137,7 +163,7 @@ def _analyse(rec_id):
             ranked.strike(rec["user_id"])
             d["profanity"] = True                        # recordings: a warning on the result, no score change
         check_topic(d, topic_question(rec), rec["user_id"])
-        res = check_integrity(d, audio, rec["user_id"], sections)
+        res = check_integrity(d, audio, rec["user_id"], sections, original=src)
         db.run("UPDATE recordings SET status='done', data=?, audio_path=?, overall=?, cefr=?, ielts=?, scores=? "
                "WHERE id=?", json.dumps(d, ensure_ascii=False), str(audio), res["overall"],
                res["level"]["cefr"], res["level"]["ielts"], json.dumps(res["sections"]), rec_id)
